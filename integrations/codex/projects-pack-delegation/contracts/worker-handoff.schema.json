@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:projects-local-pack-orchestrator:worker-handoff:1",
+  "title": "Projects Local Pack Orchestrator Worker Handoff v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "packId",
+    "workerId",
+    "status",
+    "filesChanged",
+    "tests",
+    "summary",
+    "blocker",
+    "completionEvidence",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "packId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "workerId": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "status": { "enum": ["completed", "blocked", "failed"] },
+    "filesChanged": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500,
+        "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[^\\u0000]+$"
+      }
+    },
+    "tests": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "passed", "note"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "passed": { "type": "boolean" },
+          "note": { "type": ["string", "null"], "minLength": 1, "maxLength": 1000 }
+        }
+      }
+    },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "blocker": { "type": ["string", "null"], "maxLength": 2000 },
+    "completionEvidence": { "type": ["string", "null"], "maxLength": 2000 },
+    "createdAt": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "completed" } } },
+      "then": {
+        "properties": {
+          "blocker": { "const": null },
+          "completionEvidence": { "type": "string", "minLength": 1 },
+          "tests": { "items": { "properties": { "passed": { "const": true } } } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "enum": ["blocked", "failed"] } } },
+      "then": {
+        "properties": {
+          "blocker": { "type": "string", "minLength": 1 },
+          "completionEvidence": { "const": null }
+        }
+      }
+    }
+  ]
+}

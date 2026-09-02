@@ -1,0 +1,61 @@
+{
+  "name": "projects-harness-pack-delegation",
+  "version": "1.3.0",
+  "handoffSchema": "urn:projects-local-pack-orchestrator:worker-handoff:1",
+  "maxChildren": 4,
+  "requiredTools": [
+    "whoami",
+    "update_pack",
+    "delegate_pack",
+    "bind_delegation_thread",
+    "submit_worker_handoff",
+    "review_worker_handoff"
+  ],
+  "coordinatorSequence": [
+    "choose_execution_mode",
+    "record_execution_mode",
+    "delegate_pack",
+    "spawn",
+    "bind_delegation_thread",
+    "wait",
+    "review_worker_handoff"
+  ],
+  "executionDecision": {
+    "default": "single_agent",
+    "recordWith": "update_pack.agentExecution",
+    "delegateWhenAll": [
+      "two_to_four_assignments",
+      "independent_scopes",
+      "disjoint_write_sets",
+      "concurrent_execution_shortens_critical_path",
+      "each_assignment_has_bounded_done_when"
+    ],
+    "staySingleWhenAny": [
+      "one_assignment",
+      "sequential_dependency",
+      "shared_write_scope",
+      "coordination_cost_exceeds_expected_work"
+    ],
+    "explicitDelegationRequestStillRequiresSafeAssignments": true
+  },
+  "workerSequence": [
+    "work",
+    "submit_worker_handoff",
+    "return"
+  ],
+  "invariants": {
+    "delegationsCreatedSerially": true,
+    "childrenRunConcurrently": true,
+    "coordinatorReviewsHandoffs": true,
+    "workerReviewsHandoffs": false,
+    "oneTerminalHandoffPerAttempt": true,
+    "malformedHandoffRequiresCoordinatorRework": true,
+    "delegationThreadBindingImmutable": true,
+    "reworkReusesBoundChild": true,
+    "delegationThreadTranscriptAllowed": false,
+    "delegationThreadCredentialAllowed": false,
+    "delegationThreadProviderPayloadAllowed": false,
+    "pollingAllowed": false,
+    "parentAutoCompletionAllowed": false
+  }
+}

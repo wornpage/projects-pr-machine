@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wornpage PR Machine CLI</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 15% 15%, rgba(67, 191, 168, 0.14), transparent 35%),
+        #09110f;
+      color: #e9f5f1;
+    }
+    main { width: min(1120px, calc(100vw - 72px)); }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+    h1 { margin: 0; font-size: 34px; letter-spacing: -0.035em; }
+    header p { margin: 8px 0 0; color: #a9c2ba; font-size: 17px; }
+    .badge { color: #8ce0cb; border: 1px solid #2b6c5c; border-radius: 999px; padding: 8px 12px; white-space: nowrap; }
+    .terminal {
+      overflow: hidden;
+      border: 1px solid #29483f;
+      border-radius: 18px;
+      background: rgba(7, 15, 13, 0.96);
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
+    }
+    .bar { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid #203b34; background: #0e1c18; }
+    .dot { width: 11px; height: 11px; border-radius: 50%; background: #315b50; }
+    .bar span:last-child { margin-left: 10px; color: #78978e; font: 13px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    pre { margin: 0; padding: 26px 30px 30px; font: 15px/1.56 ui-monospace, SFMono-Regular, Consolas, monospace; color: #d8ebe5; white-space: pre-wrap; }
+    .prompt { color: #72d7bc; }
+    .muted { color: #8ba79f; }
+    footer { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
+    footer span { padding: 7px 10px; border-radius: 8px; color: #b8d1c9; background: #11231e; border: 1px solid #23443b; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Wornpage PR Machine</h1>
+        <p>Reviewed agent work in. Verified draft pull request out.</p>
+      </div>
+      <div class="badge">2.5.0-beta.1</div>
+    </header>
+    <section class="terminal" aria-label="projects-pr command help">
+      <div class="bar"><i class="dot"></i><i class="dot"></i><i class="dot"></i><span>projects-pr — PowerShell 7</span></div>
+      <pre><span class="prompt">PS&gt; projects-pr --help</span>
+
+projects-pr v2
+
+Prepare and finalize reviewed, low-energy Projects workers as draft PRs.
+Optionally link two or more completed drafts into GitHub's public-preview stack.
+There is no one-shot worker-command mode and this controller never merges.
+
+  doctor    Read-only capability, repository, remote, and GitHub checks.
+  prepare   Create the exact isolated branch/worktree and resumable state.
+  status    Observe local, remote, worktree, and PR state without mutation.
+  finalize  Verify, push the exact ref, create/verify a draft PR, and clean up.
+  stack     Link completed drafts bottom-to-top with official github/gh-stack.
+  abort     Remove only an unchanged, unpushed prepared worktree and branch.
+
+<span class="muted">Lifecycle: doctor → prepare → worker → review → finalize</span></pre>
+    </section>
+    <footer>
+      <span>fixed verification hash</span>
+      <span>exact ref push</span>
+      <span>draft only</span>
+      <span>owner-controlled merge</span>
+    </footer>
+  </main>
+</body>
+</html>

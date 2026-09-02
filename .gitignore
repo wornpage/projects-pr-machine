@@ -1,0 +1,7 @@
+node_modules/
+*.tgz
+coverage/
+.DS_Store
+Thumbs.db
+projects-pr-v2/
+.projects-pr-worktrees/
