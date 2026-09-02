@@ -49,3 +49,12 @@ test('public protocol copies are bundled beside the Codex integration', async ()
   assert.ok(contract);
   assert.equal(handoff.$id, 'urn:projects-local-pack-orchestrator:worker-handoff:1');
 });
+
+test('CI executes only immutable action revisions', async () => {
+  const workflow = await fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const references = [...workflow.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)(?:\s+#.*)?$/gmu)].map((match) => match[1]);
+  assert.ok(references.length > 0);
+  for (const reference of references) {
+    assert.match(reference, /@[0-9a-f]{40}$/u, reference);
+  }
+});
