@@ -43,7 +43,7 @@ Stacked drafts are optional and additionally require the official `github/gh-sta
 Install the beta tarball from its GitHub release:
 
 ```sh
-npm install --global https://github.com/wornpage/projects-pr-machine/releases/download/v2.5.0-beta.1/wornpage-projects-pr-2.5.0-beta.1.tgz
+npm install --global https://github.com/wornpage/projects-pr-machine/releases/download/v2.5.0-beta.2/wornpage-projects-pr-2.5.0-beta.2.tgz
 projects-pr --help
 ```
 

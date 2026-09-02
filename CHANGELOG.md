@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.5.0-beta.2 - 2026-09-01
+
+- Makes the stack controller fixture portable across PowerShell 7 and `/bin/sh` CI hosts.
+- Supersedes beta.1, whose controller and release assets were valid but whose Unix stack test fixture omitted the shell capability stub.
+
 ## 2.5.0-beta.1 - 2026-09-01
 
 - First public Wornpage PR Machine source release.

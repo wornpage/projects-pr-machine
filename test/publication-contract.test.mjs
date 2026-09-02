@@ -11,7 +11,7 @@ test('public package and plugin expose one coherent beta identity', async () => 
   const manifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
   const plugin = JSON.parse(await fs.readFile(path.join(pluginRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
   assert.equal(manifest.name, '@wornpage/projects-pr');
-  assert.equal(manifest.version, '2.5.0-beta.1');
+  assert.equal(manifest.version, '2.5.0-beta.2');
   assert.equal(plugin.name, 'projects-pack-delegation');
   assert.equal(plugin.version, manifest.version);
   assert.equal(plugin.repository, 'https://github.com/wornpage/projects-pr-machine');

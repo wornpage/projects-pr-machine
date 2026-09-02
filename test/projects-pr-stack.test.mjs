@@ -29,6 +29,7 @@ function createRunner({ repositoryRoot, officialExtension = true } = {}) {
     const args = invocation.args ?? [];
     if (key === 'git --version') return { exitCode: 0, stdout: 'git version 2.51.0\n' };
     if (invocation.executable === 'pwsh') return { exitCode: 0, stdout: '7\n' };
+    if (invocation.executable === '/bin/sh') return { exitCode: 0, stdout: '' };
     if (key === 'git rev-parse --show-toplevel') return { exitCode: 0, stdout: `${repositoryRoot}\n` };
     if (key === 'git status --porcelain=v1 --untracked-files=normal') return { exitCode: 0, stdout: '' };
     if (key === 'git branch --show-current') return { exitCode: 0, stdout: 'main\n' };
