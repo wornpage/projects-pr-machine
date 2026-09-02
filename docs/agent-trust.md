@@ -4,7 +4,7 @@ Read this before connecting the Codex integration. It separates the public local
 
 ## Public local surface
 
-Version 2.5.0-beta.1 includes:
+Version 2.5.0-beta.2 includes:
 
 - one `projects-pack-delegation` skill;
 - three custom-agent definitions: coordinator, worker, and reviewer;
