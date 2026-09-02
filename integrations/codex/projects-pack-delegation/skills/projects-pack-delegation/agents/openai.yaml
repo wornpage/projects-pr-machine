@@ -1,0 +1,11 @@
+interface:
+  display_name: "Projects Pack Delegation"
+  short_description: "Default to one agent; delegate independent work"
+  default_prompt: "Use $projects-pack-delegation to choose the right execution mode, track this goal in Projects, and review every delegated worker handoff."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "wornpage-projects"
+      description: "Tenant-scoped Projects pack coordination and Worker Handoff v1"
+      transport: "streamable_http"
+      url: "https://projectsdemo.org/mcp/plugin/"

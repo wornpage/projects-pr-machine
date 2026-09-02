@@ -1,0 +1,52 @@
+{
+  "name": "@wornpage/projects-pr",
+  "version": "2.5.0-beta.1",
+  "description": "A proof-carrying controller that turns reviewed agent work into verified draft pull requests.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "bin": {
+    "projects-pr": "./integrations/codex/projects-pack-delegation/skills/projects-pack-delegation/scripts/projects-pr.mjs"
+  },
+  "exports": {
+    ".": "./integrations/codex/projects-pack-delegation/skills/projects-pack-delegation/scripts/lib/projects-pr.mjs",
+    "./cli": "./integrations/codex/projects-pack-delegation/skills/projects-pack-delegation/scripts/projects-pr.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "integrations/codex/projects-pack-delegation",
+    "docs",
+    "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "SOURCE_PROVENANCE.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "npm test && npm run check:package",
+    "check:package": "node test/package-contract.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wornpage/projects-pr-machine.git"
+  },
+  "homepage": "https://github.com/wornpage/projects-pr-machine#readme",
+  "bugs": {
+    "url": "https://github.com/wornpage/projects-pr-machine/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "keywords": [
+    "codex",
+    "pull-request",
+    "agent",
+    "workflow",
+    "github",
+    "mcp"
+  ]
+}

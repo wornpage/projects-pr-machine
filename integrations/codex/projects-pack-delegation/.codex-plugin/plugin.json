@@ -1,0 +1,33 @@
+{
+  "name": "projects-pack-delegation",
+  "version": "2.5.0-beta.1",
+  "description": "Coordinate reviewed Projects handoffs and turn accepted agent work into verified, owner-controlled draft pull requests.",
+  "author": {
+    "name": "Wornpage",
+    "url": "https://github.com/wornpage"
+  },
+  "repository": "https://github.com/wornpage/projects-pr-machine",
+  "homepage": "https://github.com/wornpage/projects-pr-machine",
+  "license": "AGPL-3.0-only",
+  "keywords": ["projects", "packs", "subagents", "delegation", "pull-requests"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Projects Pack Delegation",
+    "shortDescription": "Use one agent by default; delegate independent work.",
+    "longDescription": "Defaults to the current agent and coordinates native Codex subagents only when bounded, independent work can run concurrently with a clear benefit. Projects stores coordination state while Codex performs the work, and every delegated Worker Handoff v1 is reviewed. The draft-PR controller fixes verification before work starts, pushes only its derived branch, creates verified drafts, and leaves merge authority with the owner. Optional stacks require the official GitHub stack extension. The plugin installs no hooks, daemon, model runtime, or global CLI.",
+    "developerName": "Wornpage",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/wornpage/projects-pr-machine",
+    "privacyPolicyURL": "https://projectsdemo.org/privacy",
+    "termsOfServiceURL": "https://projectsdemo.org/terms",
+    "defaultPrompt": [
+      "Choose the right execution mode for this goal and track it through Projects packs.",
+      "Split this coding goal across independent workers and keep the parent active for integration.",
+      "Turn this tracked Projects pack into a reviewed draft pull request."
+    ],
+    "brandColor": "#1F7A6E",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png"
+  }
+}
