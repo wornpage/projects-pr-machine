@@ -1,6 +1,6 @@
 {
   "name": "projects-pack-delegation",
-  "version": "2.5.0-beta.2",
+  "version": "2.5.0-beta.3",
   "description": "Coordinate reviewed Projects handoffs and turn accepted agent work into verified, owner-controlled draft pull requests.",
   "author": {
     "name": "Wornpage",
