@@ -1,6 +1,6 @@
 # Projects Pack Delegation for Codex
 
-Version 2.5.0-beta.2 contains one coordinator skill, three Codex custom-agent
+Version 2.5.0-beta.3 contains one coordinator skill, three Codex custom-agent
 definitions, and the skill-local `projects-pr` JavaScript controller. Projects
 stores coordination state; Codex performs work with the customer's existing
 session and model subscription. Read the [trust

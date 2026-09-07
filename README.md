@@ -48,7 +48,7 @@ Stacked drafts are optional and additionally require the official `github/gh-sta
 Install the beta tarball from its GitHub release:
 
 ```sh
-npm install --global https://github.com/wornpage/projects-pr-machine/releases/download/v2.5.0-beta.2/wornpage-projects-pr-2.5.0-beta.2.tgz
+npm install --global https://github.com/wornpage/projects-pr-machine/releases/download/v2.5.0-beta.3/wornpage-projects-pr-2.5.0-beta.3.tgz
 projects-pr --help
 ```
 
@@ -89,6 +89,6 @@ The suite exercises the controller with injected Git, filesystem, shell, and Git
 
 ## License and provenance
 
-Copyright © 2026 Jared Bidlow.
+Copyright © 2026 Wornpage.
 
 Source is available under [GNU AGPL-3.0-only](LICENSE). The separately published challenge extension is MIT-licensed and contains no PR-machine source. See [SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md) for the extraction boundary.

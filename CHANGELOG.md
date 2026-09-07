@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.5.0-beta.3 - 2026-09-07
+
+- Uses Wornpage attribution in the public and packaged README.
+- Updates the recommended download to this package; controller behavior and licensing are unchanged.
+
 ## 2.5.0-beta.2 - 2026-09-01
 
 - Makes the stack controller fixture portable across PowerShell 7 and `/bin/sh` CI hosts.
