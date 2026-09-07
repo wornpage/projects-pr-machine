@@ -2,6 +2,11 @@
 
 Turn reviewed agent work into a verified **draft** pull request while keeping merge authority with the repository owner.
 
+The delivery tool in [Wornpage](https://github.com/wornpage/wornpage), a set of
+interfaces and tools that keep people in control of agent-assisted work.
+See the [repository map](https://github.com/wornpage/wornpage/blob/main/docs/repository-map.md)
+for the application, component library, and WebMCP validation toolkit.
+
 This public beta packages the controller used in the Wornpage Projects development workflow. It prepares an isolated Git worktree, fixes the verification command before work begins, verifies the resulting commit, pushes only the derived branch, creates or resumes one matching draft PR, and emits bounded JSON receipts throughout.
 
 ![Wornpage PR Machine command surface](docs/assets/projects-pr-cli.png)
