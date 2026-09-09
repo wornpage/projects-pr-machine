@@ -104,12 +104,51 @@ conversation history.
    node <absolute-controller-path> finalize --pack-id <child-pack-id> --repo <repository-root>
    ```
 
-   Report the verified draft URL and owner-decision receipt. Never merge or
-   close the PR automatically.
+   Report the verified draft URL and owner-decision receipt. Finalization never
+   merges or closes the PR.
 
 Use `status --pack-id <id> --repo <root>` to inspect or resume recorded state.
 Use `abort --pack-id <id> --repo <root>` only when the owner explicitly
 abandons an unchanged, unpushed preparation; honor any refusal.
+
+## Optional owner-authorized delivery
+
+Use this only when the repository owner explicitly asks to deliver the one
+finalized PR and a strict `.github/projects-pr-policy.json` was already merged
+into its exact base commit. Never add or enable policy in the PR being
+authorized. Missing policy means manual merge and retained remote branch.
+
+1. Reconfirm that reviewer acceptance applies to the exact finalized head SHA
+   and obtain explicit owner approval for that PR/base/head. Then run:
+
+   ```text
+   node <absolute-controller-path> authorize --pack-id <child-pack-id> \
+     --reviewed-head <exact-sha> --confirm-review --confirm-owner \
+     --repo <repository-root>
+   ```
+
+   These flags are coordinator attestations, not independent GitHub approvals.
+   A new head or base invalidates them; never follow a moving branch.
+2. Run the bounded, resumable finish operation:
+
+   ```text
+   node <absolute-controller-path> finish --pack-id <child-pack-id> --repo <repository-root>
+   ```
+
+   Report `waiting` checks and repeat only the receipt's exact finish command.
+   Never add `--auto`, substitute `gh pr merge`, or start an indefinite watch.
+   The controller requires every explicit publisher-bound check to succeed,
+   freshly rechecks identity, and preserves local state and evidence.
+3. Use `authorize-admin` only after a separate explicit owner decision names
+   the reason and every supported observable GitHub ruleset requirement being
+   bypassed. Pass each receipt value with `--bypass`. Admin authorization never
+   follows a normal failure, bypasses required checks, or overrides repository,
+   PR, base/head, frozen-repository, classic-protection, or unknown-requirement
+   refusals.
+
+Optional remote cleanup is policy-controlled and happens only after the exact
+PR is recorded merged. It uses an exact-value remote ref lease and never removes
+local branches, worktrees, state, or evidence. Stacks remain draft-only.
 
 ## Stacked draft PR flow
 

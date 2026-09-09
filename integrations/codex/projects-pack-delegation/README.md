@@ -75,6 +75,16 @@ PATH lookup, global package, source-repository fallback, `--execute`, or
 arbitrary worker command in the installed flow. See
 `../../../docs/projects-pr.md` for the controller receipt contract.
 
+The current source, but not the tagged beta package, adds an optional delivery
+stage after finalization. It is off by default. A coordinator may run
+`authorize` only after accepting the exact reviewed head and receiving explicit
+owner approval, then run one-shot `finish`; trusted base-SHA policy, exact PR
+identity, and publisher-bound checks are revalidated before merge. Admin
+authorization is a separate explicit operation with a reason and exact
+observable bypass list. It is never a fallback. Neither delivery path applies
+to stacks or the built-in frozen challenge repository, and neither uses native
+auto-merge.
+
 Two or more independently reviewed and completed drafts may be linked in
 bottom-to-top order with `projects-pr stack`. This optional path first requires
 `doctor --stack`, accepts only the official `github/gh-stack` extension, and

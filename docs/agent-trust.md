@@ -12,6 +12,10 @@ Version 2.5.0-beta.3 includes:
 - public copies of the expected MCP tool catalog and Worker Handoff v1 schema;
 - plugin artwork and metadata.
 
+The current source also contains unreleased, opt-in delivery commands. The
+tagged beta artifacts above do not. Treat source behavior and installed release
+behavior as separate until an owner-approved release is published.
+
 The source installs no hook, daemon, background runner, model runtime, Node runtime, Git client, GitHub CLI, or global credential. The controller uses only Node built-ins and invokes its prerequisites at use time.
 
 ## Hosted service boundary
@@ -34,7 +38,27 @@ Core Projects delegation can operate without the PR controller prerequisites. A 
 - a credential-free GitHub HTTPS or SSH remote;
 - GitHub CLI authentication and explicit push permission for that repository.
 
-The controller then creates one derived branch and sibling worktree, stores the fixed verification command and its SHA-256, runs that command at finalization, pushes only the exact derived ref, and creates or resumes one verified draft PR. A reviewer must accept Worker Handoff v1 before the coordinator finalizes. Merge, auto-merge, close, deployment, and parent-pack completion remain owner decisions.
+The controller then creates one derived branch and sibling worktree, stores the fixed verification command and its SHA-256, runs that command at finalization, pushes only the exact derived ref, and creates or resumes one verified draft PR. A reviewer must accept Worker Handoff v1 before the coordinator finalizes. `finalize` and `stack` never merge; close, deployment, and parent-pack completion remain owner decisions.
+
+Optional source delivery remains off unless strict policy is read from
+`.github/projects-pr-policy.json` at the exact GitHub base SHA. A PR cannot
+authorize itself by changing the policy in its head. `authorize` records the
+exact reviewed head plus separate coordinator-review and owner confirmations;
+those attestations are not GitHub approvals or protection for merges outside
+the controller. `finish` rechecks explicit publisher-bound checks and exact PR
+identity, never follows a new head, and never uses native auto-merge.
+
+The distinct admin path supports only a small exact set of active GitHub
+ruleset requirements. It requires its own owner confirmation, reason, and full
+bypass list. It refuses classic protection, status-check bypass, unknown or
+inaccessible requirements, and the frozen
+`github.com/wornpage/projects-webmcp-extension` repository. A prior normal
+failure grants no admin authority.
+
+For admin authorization, the controller observes classic protection through
+the exact base `Ref.branchProtectionRule` with administrator viewer permission.
+GitHub's aggregate REST `protected` flag includes both classic rules and
+rulesets, so it is recorded but never used alone to infer classic-rule absence.
 
 Optional stack linking requires an explicit `doctor --stack` pass and the exact official `github/gh-stack` extension. The controller does not install or update that extension. GitHub stack submission is not atomic; a failure may leave a partially linked remote stack, so recovery must repeat the same recorded bottom-to-top order.
 
@@ -46,13 +70,26 @@ The verification command is owner-supplied arbitrary local shell input. The cont
 
 Lifecycle state is stored under the repository's absolute Git common directory at `projects-pr-v2/<packId>.json`. It contains repository identity, branch and worktree paths, base and tested commits, the exact verification command and hash, lifecycle phase, and verified draft identity. The controller adds no dedicated bearer-token field and captures no verification output, but any secret supplied inside the verification command would be stored verbatim.
 
+Delivery state is nested separately and binds repository, PR, base/head, policy
+digest, check identities, authorization mode, merge receipt, and cleanup
+outcome. Optional cleanup never calls `gh --delete-branch`; it retains local
+state/evidence and uses one exact remote push URL plus an exact-value Git lease.
+That lease rejects a different ref value at deletion time; it cannot identify
+same-SHA delete/recreate history entirely between observations. Terminal
+absence/recreation has a separate guard, while default/dependency/base and rules
+observations remain non-transactional.
+
 Success removes only the exact clean prepared worktree. Failures preserve diagnostic work and emit bounded receipts. `status` is read-only. `abort` refuses worker commits, dirty state, remote state, PR state, completed state, or inconclusive observations.
 
 During beta:
 
 - run only one controller process per repository because cross-process lifecycle locking is not implemented;
-- child Git, shell, and GitHub processes have no controller-enforced timeout;
-- injected-effect tests cover command and mutation boundaries, but do not create a real remote PR.
+- existing draft-lifecycle Git, shell, and GitHub processes have no
+  controller-enforced timeout; new delivery effects have a 30-second bound and
+  one-shot resume receipts;
+- injected-effect tests cover command and mutation boundaries, and a disposable
+  local bare Git remote covers lease races, but no hosted PR/merge/delete was
+  tested.
 
 ## Source and release verification
 

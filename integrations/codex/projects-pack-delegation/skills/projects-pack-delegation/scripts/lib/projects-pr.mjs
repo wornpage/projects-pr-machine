@@ -9,11 +9,24 @@ const MAX_COMMAND_LENGTH = 2000;
 const SAFE_PACK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/u;
 const SAFE_GIT_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/u;
 const SAFE_GITHUB_SEGMENT = /^[A-Za-z0-9_.-]+$/u;
+const SAFE_OID = /^[0-9a-f]{40,64}$/iu;
 const STATE_KIND = 'projects-pr-state';
 const STATE_PHASES = new Set(['preparing', 'prepared', 'pushed', 'pr_created', 'completed', 'aborted']);
+const DELIVERY_POLICY_PATH = '.github/projects-pr-policy.json';
+const DELIVERY_POLICY_SCHEMA_VERSION = 1;
+const DELIVERY_EFFECT_TIMEOUT_MS = 30_000;
+const MERGE_METHODS = new Set(['merge', 'squash', 'rebase']);
+const FROZEN_REPOSITORIES = new Set(['github.com/wornpage/projects-webmcp-extension']);
+const ADMIN_BYPASS_RULES = new Map([
+  ['pull_request', 'github-ruleset:pull-request'],
+  ['merge_queue', 'github-ruleset:merge-queue'],
+  ['update', 'github-ruleset:update']
+]);
+const ADMIN_IRRELEVANT_RULES = new Set(['creation', 'deletion', 'non_fast_forward']);
 
 export const PROJECTS_PR_SCHEMA_VERSION = 2;
 export const PROJECTS_PR_STATE_SCHEMA_VERSION = 1;
+export const PROJECTS_PR_DELIVERY_POLICY_PATH = DELIVERY_POLICY_PATH;
 export const PROJECTS_PR_CONSTRAINTS = Object.freeze({
   energy: 'low',
   workerCount: 1,
@@ -182,7 +195,7 @@ export function createProjectsPrPlan(input = {}) {
 }
 
 export async function defaultProjectsPrRunner(invocation) {
-  const { executable, args = [], cwd, shell = false } = invocation;
+  const { executable, args = [], cwd, shell = false, timeoutMs } = invocation;
   const command = shell ? (process.platform === 'win32' ? 'pwsh' : '/bin/sh') : executable;
   const commandArgs = shell
     ? (process.platform === 'win32'
@@ -194,6 +207,7 @@ export async function defaultProjectsPrRunner(invocation) {
       cwd,
       encoding: 'utf8',
       maxBuffer: 1024 * 1024,
+      timeout: Number.isInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
       windowsHide: true
     });
     return { exitCode: 0, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
@@ -208,6 +222,21 @@ export async function defaultProjectsPrRunner(invocation) {
 
 async function invoke(runner, executable, args, cwd, shell = false) {
   const result = await runner({ executable, args, cwd, shell });
+  return {
+    exitCode: Number.isInteger(result?.exitCode) ? result.exitCode : 1,
+    stdout: String(result?.stdout ?? ''),
+    stderr: String(result?.stderr ?? '')
+  };
+}
+
+async function invokeBounded(runner, executable, args, cwd) {
+  const result = await runner({
+    executable,
+    args,
+    cwd,
+    shell: false,
+    timeoutMs: DELIVERY_EFFECT_TIMEOUT_MS
+  });
   return {
     exitCode: Number.isInteger(result?.exitCode) ? result.exitCode : 1,
     stdout: String(result?.stdout ?? ''),
@@ -841,7 +870,10 @@ export async function statusProjectsPr(input = {}, dependencies = {}) {
   const loaded = await loadLifecycle(input, dependencies);
   try {
     const observed = await observeState(loaded.state, loaded.runner, loaded.fsApi);
-    return lifecycleReceipt('status', loaded.plan, null, loaded.statePath, loaded.state, 'observed', { observed });
+    return lifecycleReceipt('status', loaded.plan, null, loaded.statePath, loaded.state, 'observed', {
+      observed,
+      delivery: loaded.state.delivery ?? { phase: 'manual', authorization: null, merged: null, cleanup: null }
+    });
   } catch (error) {
     throw failure(error, 'status', loaded.plan, null, loaded.statePath, loaded.state);
   }
@@ -1077,6 +1109,1224 @@ export function createProjectsPrOwnerDecision({ draftPullRequest, pushedRefspec,
   };
 }
 
+function exactKeys(value, allowed, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ProjectsPrError(`${label} must be an object.`, { code: 'invalid_delivery_policy' });
+  }
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unknown.length > 0) {
+    throw new ProjectsPrError(`${label} contains unknown field: ${unknown[0]}.`, {
+      code: 'invalid_delivery_policy'
+    });
+  }
+  return value;
+}
+
+function safeOid(value, label) {
+  const oid = normalizedText(value, label, 64).toLowerCase();
+  if (!SAFE_OID.test(oid)) {
+    throw new ProjectsPrError(`${label} must be a full Git object ID.`, { code: 'invalid_input' });
+  }
+  return oid;
+}
+
+function configuredBoolean(value, label) {
+  if (value !== undefined && typeof value !== 'boolean') {
+    throw new ProjectsPrError(`${label} must be boolean.`, { code: 'invalid_delivery_policy' });
+  }
+  return value === true;
+}
+
+function validateRequiredCheck(raw, index) {
+  const label = `reviewedMerge.requiredChecks[${index}]`;
+  const check = exactKeys(raw, ['kind', 'name', 'publisherId'], label);
+  const kind = normalizedText(check.kind, `${label}.kind`, 40);
+  if (!['check-run', 'status-context'].includes(kind)) {
+    throw new ProjectsPrError(`${label}.kind must be check-run or status-context.`, {
+      code: 'invalid_delivery_policy'
+    });
+  }
+  const name = normalizedText(check.name, `${label}.name`, 200);
+  if (!Number.isSafeInteger(check.publisherId) || check.publisherId < 1) {
+    throw new ProjectsPrError(`${label}.publisherId must be a positive integer.`, {
+      code: 'invalid_delivery_policy'
+    });
+  }
+  return { kind, name, publisherId: check.publisherId };
+}
+
+function defaultDeliveryPolicy(state, baseOid) {
+  return {
+    schemaVersion: DELIVERY_POLICY_SCHEMA_VERSION,
+    repository: state.github.repositorySpecifier,
+    source: { path: DELIVERY_POLICY_PATH, baseOid, present: false, sha256: null },
+    reviewedMerge: { enabled: false, method: null, requiredChecks: [] },
+    remoteBranchCleanup: { enabled: false, protectedBranches: [] },
+    adminOverride: { enabled: false }
+  };
+}
+
+function parseDeliveryPolicy(text, state, baseOid) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new ProjectsPrError('The trusted delivery policy is invalid JSON.', {
+      code: 'invalid_delivery_policy'
+    });
+  }
+  exactKeys(raw, [
+    'schemaVersion', 'repository', 'reviewedMerge', 'remoteBranchCleanup', 'adminOverride'
+  ], 'delivery policy');
+  if (raw.schemaVersion !== DELIVERY_POLICY_SCHEMA_VERSION) {
+    throw new ProjectsPrError('The trusted delivery policy schema version is unsupported.', {
+      code: 'invalid_delivery_policy'
+    });
+  }
+  const repository = normalizedText(raw.repository, 'delivery policy repository', 300).toLowerCase();
+  if (repository !== state.github.repositorySpecifier.toLowerCase()) {
+    throw new ProjectsPrError('The trusted delivery policy repository binding does not match.', {
+      code: 'delivery_policy_repository_mismatch'
+    });
+  }
+
+  const mergeRaw = raw.reviewedMerge === undefined
+    ? {}
+    : exactKeys(raw.reviewedMerge, ['enabled', 'method', 'requiredChecks'], 'reviewedMerge');
+  const mergeEnabled = configuredBoolean(mergeRaw.enabled, 'reviewedMerge.enabled');
+  let method = null;
+  let requiredChecks = [];
+  if (mergeRaw.method !== undefined) {
+    method = normalizedText(mergeRaw.method, 'reviewedMerge.method', 20);
+    if (!MERGE_METHODS.has(method)) {
+      throw new ProjectsPrError('reviewedMerge.method must be merge, squash, or rebase.', {
+        code: 'invalid_delivery_policy'
+      });
+    }
+  }
+  if (mergeRaw.requiredChecks !== undefined) {
+    if (!Array.isArray(mergeRaw.requiredChecks) || mergeRaw.requiredChecks.length === 0) {
+      throw new ProjectsPrError('reviewedMerge.requiredChecks must be a nonempty list when supplied.', {
+        code: 'invalid_delivery_policy'
+      });
+    }
+    requiredChecks = mergeRaw.requiredChecks.map(validateRequiredCheck);
+    const identities = requiredChecks.map((item) => `${item.kind}:${item.publisherId}:${item.name}`);
+    if (new Set(identities).size !== identities.length) {
+      throw new ProjectsPrError('reviewedMerge.requiredChecks contains a duplicate identity.', {
+        code: 'invalid_delivery_policy'
+      });
+    }
+  }
+  if (mergeEnabled && (!method || requiredChecks.length === 0)) {
+    throw new ProjectsPrError('Enabled reviewedMerge requires a method and nonempty requiredChecks list.', {
+      code: 'invalid_delivery_policy'
+    });
+  }
+
+  const cleanupRaw = raw.remoteBranchCleanup === undefined
+    ? {}
+    : exactKeys(raw.remoteBranchCleanup, ['enabled', 'protectedBranches'], 'remoteBranchCleanup');
+  if (!Array.isArray(cleanupRaw.protectedBranches ?? [])) {
+    throw new ProjectsPrError('remoteBranchCleanup.protectedBranches must be an array.', {
+      code: 'invalid_delivery_policy'
+    });
+  }
+  const cleanupEnabled = configuredBoolean(cleanupRaw.enabled, 'remoteBranchCleanup.enabled');
+  const protectedBranches = cleanupRaw.protectedBranches === undefined
+    ? []
+    : cleanupRaw.protectedBranches.map((branch, index) => safeGitName(branch, `protectedBranches[${index}]`));
+  if (new Set(protectedBranches).size !== protectedBranches.length) {
+    throw new ProjectsPrError('remoteBranchCleanup.protectedBranches contains a duplicate.', {
+      code: 'invalid_delivery_policy'
+    });
+  }
+
+  const adminRaw = raw.adminOverride === undefined
+    ? {}
+    : exactKeys(raw.adminOverride, ['enabled'], 'adminOverride');
+  const adminEnabled = configuredBoolean(adminRaw.enabled, 'adminOverride.enabled');
+
+  return {
+    schemaVersion: DELIVERY_POLICY_SCHEMA_VERSION,
+    repository: state.github.repositorySpecifier,
+    source: { path: DELIVERY_POLICY_PATH, baseOid, present: true, sha256: sha256(text) },
+    reviewedMerge: { enabled: mergeEnabled, method, requiredChecks },
+    remoteBranchCleanup: { enabled: cleanupEnabled, protectedBranches },
+    adminOverride: { enabled: adminEnabled }
+  };
+}
+
+const DELIVERY_POLICY_QUERY = [
+  'query($owner:String!,$name:String!,$expression:String!){',
+  'repository(owner:$owner,name:$name){',
+  'object(expression:$expression){... on Blob{text oid byteSize}}',
+  '}}'
+].join('');
+
+const CLASSIC_PROTECTION_QUERY = [
+  'query($owner:String!,$name:String!,$qualifiedName:String!){',
+  'repository(owner:$owner,name:$name){viewerPermission ',
+  'ref(qualifiedName:$qualifiedName){name branchProtectionRule{id pattern}}',
+  '}}'
+].join('');
+
+async function readDeliveryPolicy(runner, state, baseOid) {
+  const [owner, name] = state.github.nameWithOwner.split('/');
+  const result = await invokeBounded(runner, 'gh', [
+    'api', 'graphql', '--hostname', state.github.host,
+    '-f', `query=${DELIVERY_POLICY_QUERY}`,
+    '-F', `owner=${owner}`,
+    '-F', `name=${name}`,
+    '-F', `expression=${baseOid}:${DELIVERY_POLICY_PATH}`
+  ], state.repositoryRoot);
+  if (result.exitCode !== 0) {
+    throw new ProjectsPrError('The trusted delivery policy could not be observed.', {
+      code: 'delivery_policy_observation_failed', exitCode: result.exitCode
+    });
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    throw new ProjectsPrError('GitHub returned invalid policy JSON.', { code: 'invalid_gh_receipt' });
+  }
+  if (Array.isArray(parsed?.errors) && parsed.errors.length > 0) {
+    throw new ProjectsPrError('The trusted delivery policy could not be observed.', {
+      code: 'delivery_policy_observation_failed'
+    });
+  }
+  const repository = parsed?.data?.repository;
+  if (!repository) {
+    throw new ProjectsPrError('The policy repository could not be observed.', {
+      code: 'delivery_policy_observation_failed'
+    });
+  }
+  const blob = repository.object;
+  if (blob === null) return defaultDeliveryPolicy(state, baseOid);
+  if (typeof blob?.text !== 'string' || !Number.isSafeInteger(blob.byteSize) || blob.byteSize > 32_768) {
+    throw new ProjectsPrError('The trusted delivery policy must be a text file no larger than 32 KiB.', {
+      code: 'invalid_delivery_policy'
+    });
+  }
+  return parseDeliveryPolicy(blob.text, state, baseOid);
+}
+
+async function githubJson(runner, state, args, label) {
+  const result = await invokeBounded(runner, 'gh', [
+    'api', '--hostname', state.github.host, ...args
+  ], state.repositoryRoot);
+  if (result.exitCode !== 0) {
+    throw new ProjectsPrError(`${label} failed.`, {
+      code: 'github_delivery_observation_failed', exitCode: result.exitCode
+    });
+  }
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    throw new ProjectsPrError(`${label} returned invalid JSON.`, { code: 'invalid_gh_receipt' });
+  }
+}
+
+function validateDeliveryPullRequest(raw, state) {
+  const number = state.draftPullRequest?.number;
+  const expectedRepository = state.github.nameWithOwner.toLowerCase();
+  const urlNumber = parseGitHubPullUrl(raw?.html_url, state);
+  const headOid = parseOidLine(raw?.head?.sha);
+  const baseOid = parseOidLine(raw?.base?.sha);
+  const mergeCommitOid = raw?.merge_commit_sha ? parseOidLine(raw.merge_commit_sha) : null;
+  if (!Number.isSafeInteger(number)
+    || raw?.number !== number
+    || urlNumber !== number
+    || raw?.head?.ref !== state.branch
+    || raw?.base?.ref !== state.baseBranch
+    || String(raw?.head?.repo?.full_name ?? '').toLowerCase() !== expectedRepository
+    || String(raw?.base?.repo?.full_name ?? '').toLowerCase() !== expectedRepository
+    || !headOid
+    || !baseOid
+    || headOid !== state.verifiedCommit
+    || headOid !== state.pushedCommit) {
+    throw new ProjectsPrError('The pull request no longer matches the finalized repository, base, branch, and head.', {
+      code: 'delivery_identity_mismatch'
+    });
+  }
+  return {
+    number,
+    url: raw.html_url,
+    state: String(raw.state).toUpperCase(),
+    draft: raw.draft === true,
+    merged: raw.merged === true,
+    mergedAt: typeof raw.merged_at === 'string' ? raw.merged_at : null,
+    mergeCommitOid,
+    mergeable: typeof raw.mergeable === 'boolean' ? raw.mergeable : null,
+    mergeableState: typeof raw.mergeable_state === 'string' ? raw.mergeable_state.toLowerCase() : null,
+    base: raw.base.ref,
+    baseOid,
+    head: raw.head.ref,
+    headOid,
+    repository: state.github.nameWithOwner
+  };
+}
+
+async function observeDeliveryPullRequest(runner, state) {
+  const raw = await githubJson(runner, state, [
+    `repos/${state.github.nameWithOwner}/pulls/${state.draftPullRequest?.number}`
+  ], 'Exact pull request observation');
+  return validateDeliveryPullRequest(raw, state);
+}
+
+function assertDeliveryRepositoryAllowed(state) {
+  if (FROZEN_REPOSITORIES.has(state.github.repositorySpecifier.toLowerCase())) {
+    throw new ProjectsPrError('Delivery mutations are frozen for this repository.', {
+      code: 'frozen_repository'
+    });
+  }
+}
+
+async function listOpenPullRequests(runner, state) {
+  const pages = await githubJson(runner, state, [
+    '--paginate', '--slurp',
+    `repos/${state.github.nameWithOwner}/pulls?state=open&per_page=100`
+  ], 'Open pull request observation');
+  if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
+    throw new ProjectsPrError('GitHub returned an invalid open pull request list.', {
+      code: 'invalid_gh_receipt'
+    });
+  }
+  return pages.flat();
+}
+
+async function assertStandaloneDelivery(runner, state, pullRequest) {
+  const pulls = await listOpenPullRequests(runner, state);
+  const conflicts = pulls.filter((candidate) => candidate?.number !== pullRequest.number
+    && (candidate?.base?.ref === state.branch
+      || (candidate?.head?.ref === state.branch
+        && String(candidate?.head?.repo?.full_name ?? '').toLowerCase()
+          === state.github.nameWithOwner.toLowerCase())));
+  if (conflicts.length > 0) {
+    throw new ProjectsPrError('Delivery is refused for a stacked, shared, or dependent pull request branch.', {
+      code: 'stacked_or_shared_branch'
+    });
+  }
+}
+
+async function observeRequiredChecks(runner, state, authorization, policy) {
+  const required = policy.reviewedMerge.requiredChecks;
+  const needsRuns = required.some((item) => item.kind === 'check-run');
+  const needsStatuses = required.some((item) => item.kind === 'status-context');
+  let runs = [];
+  let statuses = [];
+  if (needsRuns) {
+    const response = await githubJson(runner, state, [
+      `repos/${state.github.nameWithOwner}/commits/${authorization.pullRequest.headOid}/check-runs?filter=latest&per_page=100`
+    ], 'Required check-run observation');
+    if (!Number.isSafeInteger(response?.total_count)
+      || !Array.isArray(response?.check_runs)
+      || response.total_count !== response.check_runs.length
+      || response.total_count > 100) {
+      throw new ProjectsPrError('The complete required check-run set could not be observed.', {
+        code: 'incomplete_check_observation'
+      });
+    }
+    runs = response.check_runs;
+  }
+  if (needsStatuses) {
+    const response = await githubJson(runner, state, [
+      `repos/${state.github.nameWithOwner}/commits/${authorization.pullRequest.headOid}/status?per_page=100`
+    ], 'Required commit-status observation');
+    if (parseOidLine(response?.sha) !== authorization.pullRequest.headOid
+      || !Number.isSafeInteger(response?.total_count)
+      || !Array.isArray(response?.statuses)
+      || response.total_count !== response.statuses.length
+      || response.total_count > 100) {
+      throw new ProjectsPrError('The complete required commit-status set could not be observed.', {
+        code: 'incomplete_check_observation'
+      });
+    }
+    statuses = response.statuses;
+  }
+
+  const observations = required.map((checkPolicy) => {
+    const matches = checkPolicy.kind === 'check-run'
+      ? runs.filter((run) => run?.name === checkPolicy.name && run?.app?.id === checkPolicy.publisherId)
+      : statuses.filter((status) => status?.context === checkPolicy.name
+        && status?.creator?.id === checkPolicy.publisherId);
+    if (matches.length !== 1) {
+      return {
+        ...checkPolicy,
+        outcome: matches.length === 0 ? 'missing' : 'ambiguous',
+        state: null
+      };
+    }
+    const observed = matches[0];
+    if (checkPolicy.kind === 'check-run') {
+      const exactHead = parseOidLine(observed.head_sha) === authorization.pullRequest.headOid;
+      const passed = exactHead && observed.status === 'completed' && observed.conclusion === 'success';
+      const outcome = !exactHead
+        ? 'stale-sha'
+        : (observed.status !== 'completed'
+          ? String(observed.status ?? 'unknown')
+          : String(observed.conclusion ?? 'unknown'));
+      return {
+        ...checkPolicy,
+        outcome: passed ? 'success' : outcome,
+        state: `${String(observed.status ?? 'unknown')}/${String(observed.conclusion ?? 'unknown')}`
+      };
+    }
+    const passed = observed.state === 'success';
+    return {
+      ...checkPolicy,
+      outcome: passed ? 'success' : String(observed.state ?? 'unknown'),
+      state: String(observed.state ?? 'unknown')
+    };
+  });
+  return {
+    headOid: authorization.pullRequest.headOid,
+    passed: observations.every((item) => item.outcome === 'success'),
+    required: observations
+  };
+}
+
+async function observeClassicBranchProtection(runner, state, baseBranch, aggregateProtected) {
+  const [owner, name] = state.github.nameWithOwner.split('/');
+  const result = await invokeBounded(runner, 'gh', [
+    'api', 'graphql', '--hostname', state.github.host,
+    '-f', `query=${CLASSIC_PROTECTION_QUERY}`,
+    '-F', `owner=${owner}`,
+    '-F', `name=${name}`,
+    '-F', `qualifiedName=refs/heads/${baseBranch}`
+  ], state.repositoryRoot);
+  if (result.exitCode !== 0) {
+    throw new ProjectsPrError('Classic branch protection observation failed.', {
+      code: 'admin_requirements_unavailable', exitCode: result.exitCode
+    });
+  }
+  let response;
+  try {
+    response = JSON.parse(result.stdout);
+  } catch {
+    throw new ProjectsPrError('Classic branch protection observation returned invalid JSON.', {
+      code: 'admin_requirements_unavailable'
+    });
+  }
+  if (Array.isArray(response?.errors) && response.errors.length > 0) {
+    throw new ProjectsPrError('Classic branch protection observation was incomplete.', {
+      code: 'admin_requirements_unavailable'
+    });
+  }
+  const repository = response?.data?.repository;
+  const ref = repository?.ref;
+  if (repository?.viewerPermission !== 'ADMIN'
+    || ref?.name !== baseBranch
+    || !Object.hasOwn(ref ?? {}, 'branchProtectionRule')) {
+    throw new ProjectsPrError('Classic branch protection requires an exact administrator-visible ref observation.', {
+      code: 'admin_requirements_unavailable'
+    });
+  }
+  if (ref.branchProtectionRule !== null) {
+    if (typeof ref.branchProtectionRule?.id !== 'string'
+      || typeof ref.branchProtectionRule?.pattern !== 'string') {
+      throw new ProjectsPrError('Classic branch protection observation was malformed.', {
+        code: 'admin_requirements_unavailable'
+      });
+    }
+    throw new ProjectsPrError('Admin delivery does not bypass classic branch protection requirements.', {
+      code: 'unsupported_admin_requirements'
+    });
+  }
+  const receipt = {
+    aggregateProtected,
+    viewerPermission: repository.viewerPermission,
+    refName: ref.name,
+    branchProtectionRule: null
+  };
+  return { sha256: sha256(canonicalJson(receipt)) };
+}
+
+async function observeAdminRequirements(runner, state, authorization, method) {
+  const encodedBase = encodeURIComponent(authorization.pullRequest.base);
+  const pages = await githubJson(runner, state, [
+    '--paginate', '--slurp',
+    `repos/${state.github.nameWithOwner}/rules/branches/${encodedBase}?per_page=100`
+  ], 'Active repository rules observation');
+  if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
+    throw new ProjectsPrError('GitHub returned an invalid active rules list.', { code: 'invalid_gh_receipt' });
+  }
+
+  const branch = await githubJson(runner, state, [
+    `repos/${state.github.nameWithOwner}/branches/${encodedBase}`
+  ], 'Base branch protection metadata observation');
+  if (typeof branch?.protected !== 'boolean') {
+    throw new ProjectsPrError('Base branch protection metadata is incomplete.', {
+      code: 'admin_requirements_unavailable'
+    });
+  }
+
+  const classicProtection = await observeClassicBranchProtection(
+    runner, state, authorization.pullRequest.base, branch.protected
+  );
+
+  const activeRules = pages.flat();
+  const types = [...new Set(activeRules.map((rule) => String(rule?.type ?? '')))].sort();
+  if (types.includes('required_status_checks')) {
+    throw new ProjectsPrError('Admin delivery never bypasses repository-configured status checks.', {
+      code: 'unsupported_admin_requirements'
+    });
+  }
+  if (types.includes('required_linear_history') && method === 'merge') {
+    throw new ProjectsPrError('The selected merge method does not satisfy required linear history.', {
+      code: 'unsupported_admin_requirements'
+    });
+  }
+  const unsupported = types.filter((type) => type
+    && !ADMIN_BYPASS_RULES.has(type)
+    && !ADMIN_IRRELEVANT_RULES.has(type)
+    && type !== 'required_linear_history');
+  if (unsupported.length > 0 || types.includes('')) {
+    throw new ProjectsPrError('Admin delivery encountered an unsupported external requirement.', {
+      code: 'unsupported_admin_requirements'
+    });
+  }
+  const bypassedRequirements = types.filter((type) => ADMIN_BYPASS_RULES.has(type))
+    .map((type) => ADMIN_BYPASS_RULES.get(type)).sort();
+  if (bypassedRequirements.length === 0) {
+    throw new ProjectsPrError('Admin delivery requires at least one observable supported requirement to bypass.', {
+      code: 'admin_override_not_required'
+    });
+  }
+  const canonicalRules = activeRules.map((rule) => canonicalJson(rule)).sort();
+  return {
+    bypassedRequirements,
+    rulesSha256: sha256(JSON.stringify(canonicalRules)),
+    classicProtectionSha256: classicProtection.sha256
+  };
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function deliveryReceipt(command, plan, statePath, state, status, result = {}) {
+  return {
+    schemaVersion: PROJECTS_PR_SCHEMA_VERSION,
+    kind: 'projects-pr-delivery',
+    command,
+    status,
+    packId: plan.packId,
+    constraints: {
+      onePullRequest: true,
+      exactAuthorizedHead: true,
+      requiredChecks: true,
+      nativeAutoMerge: false,
+      localEvidencePreserved: true
+    },
+    repository: {
+      root: plan.repositoryRoot,
+      baseBranch: plan.baseBranch,
+      remote: plan.remote,
+      github: { host: state.github.host, nameWithOwner: state.github.nameWithOwner }
+    },
+    plan: planReceipt(plan),
+    state: {
+      ...publicState(statePath, state),
+      deliveryPhase: state.delivery?.phase ?? null
+    },
+    result
+  };
+}
+
+function deliveryRecovery(command, plan) {
+  return {
+    nextCommand: command === 'finish' ? 'finish' : 'status',
+    args: ['--pack-id', plan.packId, '--repo', plan.repositoryRoot]
+  };
+}
+
+function deliveryFailure(error, command, plan, statePath, state, result = {}) {
+  const projectsError = error instanceof ProjectsPrError
+    ? error
+    : new ProjectsPrError('projects-pr delivery command failed.');
+  projectsError.receipt = {
+    ...deliveryReceipt(command, plan, statePath, state, 'failed', result),
+    error: { code: projectsError.code, message: projectsError.message, exitCode: projectsError.exitCode },
+    recovery: deliveryRecovery(command, plan)
+  };
+  return projectsError;
+}
+
+function assertCompletedForDelivery(state) {
+  if (state.phase !== 'completed'
+    || !state.draftPullRequest
+    || !state.verifiedCommit
+    || state.verifiedCommit !== state.pushedCommit) {
+    throw new ProjectsPrError('Delivery requires one completed draft-first lifecycle.', {
+      code: 'delivery_not_finalized'
+    });
+  }
+}
+
+function normalizedBypasses(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ProjectsPrError('Admin authorization requires at least one --bypass value.', {
+      code: 'invalid_admin_authorization'
+    });
+  }
+  const values = value.map((item, index) => normalizedText(item, `bypass[${index}]`, 160));
+  if (new Set(values).size !== values.length) {
+    throw new ProjectsPrError('Admin authorization bypass values must be unique.', {
+      code: 'invalid_admin_authorization'
+    });
+  }
+  return values.sort();
+}
+
+function authorizationMatchesPullRequest(authorization, pullRequest, { requireBaseOid = true } = {}) {
+  return authorization?.pullRequest?.number === pullRequest.number
+    && authorization.pullRequest.repository.toLowerCase() === pullRequest.repository.toLowerCase()
+    && authorization.pullRequest.base === pullRequest.base
+    && (!requireBaseOid || authorization.pullRequest.baseOid === pullRequest.baseOid)
+    && authorization.pullRequest.head === pullRequest.head
+    && authorization.pullRequest.headOid === pullRequest.headOid;
+}
+
+function assertAuthorizationMatchesPullRequest(authorization, pullRequest, options) {
+  const same = authorization?.repository?.host
+    && authorization?.repository?.nameWithOwner
+    && authorization.repository.host.toLowerCase() === authorization.policy.repository.split('/')[0].toLowerCase()
+    && authorization.repository.nameWithOwner.toLowerCase() === pullRequest.repository.toLowerCase()
+    && authorizationMatchesPullRequest(authorization, pullRequest, options);
+  if (!same) {
+    throw new ProjectsPrError('The pull request changed after owner authorization.', {
+      code: 'stale_delivery_authorization'
+    });
+  }
+}
+
+function assertPolicyMatchesAuthorization(policy, authorization) {
+  if (!policy.source.present
+    || policy.source.baseOid !== authorization.policy.baseOid
+    || policy.source.sha256 !== authorization.policy.sha256
+    || policy.repository.toLowerCase() !== authorization.policy.repository.toLowerCase()
+    || !policy.reviewedMerge.enabled) {
+    throw new ProjectsPrError('The trusted delivery policy no longer matches the authorization.', {
+      code: 'stale_delivery_policy'
+    });
+  }
+}
+
+async function authorizeDelivery(input, dependencies, mode) {
+  const loaded = await loadLifecycle(input, dependencies);
+  const { runner, fsApi, statePath, plan } = loaded;
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  let state = loaded.state;
+  const command = mode === 'admin' ? 'authorize-admin' : 'authorize';
+  try {
+    assertCompletedForDelivery(state);
+    assertDeliveryRepositoryAllowed(state);
+    if (input.confirmReview !== true || input.confirmOwner !== true) {
+      throw new ProjectsPrError('Authorization requires explicit review and owner confirmations.', {
+        code: 'authorization_confirmation_required'
+      });
+    }
+    const reviewedHead = safeOid(input.reviewedHead, 'reviewedHead');
+    const pullRequest = await observeDeliveryPullRequest(runner, state);
+    if (pullRequest.merged || pullRequest.state !== 'OPEN') {
+      throw new ProjectsPrError('Authorization requires the exact open pull request.', {
+        code: 'delivery_pull_request_not_open'
+      });
+    }
+    const resumingReadyPull = pullRequest.draft === false
+      && state.delivery?.readyAt
+      && state.delivery?.authorization?.pullRequest?.headOid === pullRequest.headOid;
+    if (!pullRequest.draft && !resumingReadyPull) {
+      throw new ProjectsPrError('Authorization starts from the finalized draft pull request.', {
+        code: 'delivery_pull_request_not_draft'
+      });
+    }
+    if (reviewedHead !== pullRequest.headOid
+      || reviewedHead !== state.verifiedCommit
+      || reviewedHead !== state.pushedCommit) {
+      throw new ProjectsPrError('The reviewed head is not the exact finalized pull request head.', {
+        code: 'stale_reviewed_head'
+      });
+    }
+    await assertStandaloneDelivery(runner, state, pullRequest);
+    const policy = await readDeliveryPolicy(runner, state, pullRequest.baseOid);
+    if (!policy.reviewedMerge.enabled) {
+      throw new ProjectsPrError('Reviewed merge is not enabled by the trusted base policy.', {
+        code: 'reviewed_merge_disabled'
+      });
+    }
+    if (mode === 'admin' && !policy.adminOverride.enabled) {
+      throw new ProjectsPrError('Admin override is not enabled by the trusted base policy.', {
+        code: 'admin_override_disabled'
+      });
+    }
+
+    let override = null;
+    if (mode === 'admin') {
+      const reason = normalizedText(input.reason, 'reason', 500);
+      const requested = normalizedBypasses(input.bypassedRequirements);
+      const observed = await observeAdminRequirements(runner, state, {
+        pullRequest
+      }, policy.reviewedMerge.method);
+      if (JSON.stringify(requested) !== JSON.stringify(observed.bypassedRequirements)) {
+        throw new ProjectsPrError('Admin bypass values must exactly match the observable supported requirements.', {
+          code: 'admin_bypass_mismatch'
+        });
+      }
+      override = {
+        reason,
+        bypassedRequirements: requested,
+        observedRulesSha256: observed.rulesSha256,
+        classicProtectionSha256: observed.classicProtectionSha256
+      };
+    }
+
+    const authorization = {
+      mode,
+      authorizedAt: now(),
+      repository: { host: state.github.host, nameWithOwner: state.github.nameWithOwner },
+      pullRequest: {
+        number: pullRequest.number,
+        url: pullRequest.url,
+        repository: pullRequest.repository,
+        base: pullRequest.base,
+        baseOid: pullRequest.baseOid,
+        head: pullRequest.head,
+        headOid: pullRequest.headOid
+      },
+      policy: {
+        path: policy.source.path,
+        baseOid: policy.source.baseOid,
+        sha256: policy.source.sha256,
+        repository: policy.repository
+      },
+      review: {
+        accepted: true,
+        reviewedHead,
+        kind: 'coordinator-attestation',
+        independentGitHubApproval: false
+      },
+      owner: { confirmed: true },
+      override
+    };
+    state = {
+      ...state,
+      delivery: {
+        phase: 'authorized',
+        authorization,
+        readyAt: resumingReadyPull ? state.delivery.readyAt : null,
+        merged: null,
+        cleanup: null
+      },
+      updatedAt: now()
+    };
+    await writeState(fsApi, statePath, state);
+    return deliveryReceipt(command, plan, statePath, state, 'authorized', {
+      resumed: false,
+      authorization,
+      policy: {
+        source: policy.source,
+        reviewedMerge: policy.reviewedMerge,
+        remoteBranchCleanup: policy.remoteBranchCleanup,
+        adminOverride: policy.adminOverride
+      }
+    });
+  } catch (error) {
+    throw deliveryFailure(error, command, plan, statePath, state);
+  }
+}
+
+export async function authorizeProjectsPr(input = {}, dependencies = {}) {
+  return authorizeDelivery(input, dependencies, 'reviewed');
+}
+
+export async function authorizeAdminProjectsPr(input = {}, dependencies = {}) {
+  return authorizeDelivery(input, dependencies, 'admin');
+}
+
+function parsePushDestination(remoteUrl, state) {
+  if (/^(?:https|ssh):\/\//iu.test(remoteUrl)) {
+    let parsed;
+    try {
+      parsed = new URL(remoteUrl);
+    } catch {
+      throw new ProjectsPrError('The cleanup push destination is invalid.', {
+        code: 'cleanup_push_destination_mismatch'
+      });
+    }
+    if (parsed.port) {
+      throw new ProjectsPrError('Cleanup refuses a push destination with a custom port.', {
+        code: 'cleanup_push_destination_mismatch'
+      });
+    }
+  }
+  const parsed = parseGitHubRemote(remoteUrl);
+  if (parsed.host !== state.github.host.toLowerCase()
+    || parsed.nameWithOwner.toLowerCase() !== state.github.nameWithOwner.toLowerCase()) {
+    throw new ProjectsPrError('The cleanup push destination does not match the authorized repository.', {
+      code: 'cleanup_push_destination_mismatch'
+    });
+  }
+  return parsed;
+}
+
+async function assertCleanupPushDestination(runner, state) {
+  const urls = await invokeBounded(runner, 'git', [
+    'remote', 'get-url', '--push', '--all', state.remote
+  ], state.repositoryRoot);
+  const destinations = urls.stdout.split(/\r?\n/gu).map((value) => value.trim()).filter(Boolean);
+  if (urls.exitCode !== 0 || destinations.length !== 1) {
+    throw new ProjectsPrError('Cleanup requires exactly one observable push destination.', {
+      code: 'cleanup_push_destination_mismatch', exitCode: urls.exitCode
+    });
+  }
+  parsePushDestination(destinations[0], state);
+  const mirror = await invokeBounded(runner, 'git', [
+    'config', '--get-all', `remote.${state.remote}.mirror`
+  ], state.repositoryRoot);
+  if (![0, 1].includes(mirror.exitCode)) {
+    throw new ProjectsPrError('Cleanup could not inspect remote mirror configuration.', {
+      code: 'cleanup_push_destination_mismatch', exitCode: mirror.exitCode
+    });
+  }
+  const mirrorValues = mirror.stdout.split(/\r?\n/gu).map((value) => value.trim()).filter(Boolean);
+  if (mirrorValues.some((value) => !['false', 'no', 'off', '0'].includes(value.toLowerCase()))) {
+    throw new ProjectsPrError('Cleanup refuses a mirror push remote.', {
+      code: 'cleanup_push_destination_mismatch'
+    });
+  }
+}
+
+async function cleanupMergedRemoteBranch(runner, state, authorization, policy) {
+  const branch = state.branch;
+  const expectedOid = authorization.pullRequest.headOid;
+  const expectedRef = `refs/heads/${branch}`;
+  if (!policy.remoteBranchCleanup.enabled) {
+    return { status: 'retained', reason: 'policy-disabled', deletedByController: false };
+  }
+  if (branch === state.baseBranch || policy.remoteBranchCleanup.protectedBranches.includes(branch)) {
+    return { status: 'retained', reason: 'protected-branch', deletedByController: false };
+  }
+  const repository = await githubJson(runner, state, [
+    `repos/${state.github.nameWithOwner}`
+  ], 'Repository cleanup guard observation');
+  if (repository?.default_branch === branch) {
+    return { status: 'retained', reason: 'default-branch', deletedByController: false };
+  }
+  if (typeof repository?.default_branch !== 'string') {
+    throw new ProjectsPrError('The default branch could not be observed for cleanup.', {
+      code: 'cleanup_guard_unavailable'
+    });
+  }
+  const pulls = await listOpenPullRequests(runner, state);
+  const conflict = pulls.find((pull) => pull?.base?.ref === branch
+    || (pull?.head?.ref === branch
+      && String(pull?.head?.repo?.full_name ?? '').toLowerCase()
+        === state.github.nameWithOwner.toLowerCase()));
+  if (conflict) {
+    return {
+      status: 'waiting',
+      reason: pullNumberReason(conflict.number),
+      deletedByController: false
+    };
+  }
+  await assertCleanupPushDestination(runner, state);
+  const before = await invokeBounded(runner, 'git', [
+    'ls-remote', '--heads', state.remote, expectedRef
+  ], state.repositoryRoot);
+  if (before.exitCode !== 0) {
+    throw new ProjectsPrError('The remote branch could not be observed for cleanup.', {
+      code: 'cleanup_guard_unavailable', exitCode: before.exitCode
+    });
+  }
+  const beforeOid = parseExactRemoteRef(before.stdout, expectedRef);
+  if (!beforeOid) {
+    return { status: 'already-absent', reason: null, deletedByController: false };
+  }
+  if (beforeOid !== expectedOid) {
+    throw new ProjectsPrError('Cleanup refused because the remote branch changed or was reused.', {
+      code: 'remote_branch_changed'
+    });
+  }
+  const lease = `--force-with-lease=${expectedRef}:${expectedOid}`;
+  const deletion = await invokeBounded(runner, 'git', [
+    'push', lease, state.remote, `:refs/heads/${branch}`
+  ], state.repositoryRoot);
+  if (deletion.exitCode !== 0) {
+    const raced = await invokeBounded(runner, 'git', [
+      'ls-remote', '--heads', state.remote, expectedRef
+    ], state.repositoryRoot);
+    const racedOid = raced.exitCode === 0 ? parseExactRemoteRef(raced.stdout, expectedRef) : null;
+    if (raced.exitCode === 0 && !racedOid) {
+      return { status: 'already-absent', reason: 'removed-elsewhere', deletedByController: false };
+    }
+    if (racedOid && racedOid !== expectedOid) {
+      throw new ProjectsPrError('Cleanup lease refused a changed or reused remote branch.', {
+        code: 'remote_branch_changed', exitCode: deletion.exitCode
+      });
+    }
+    throw new ProjectsPrError('The leased remote branch deletion failed.', {
+      code: 'cleanup_delete_failed', exitCode: deletion.exitCode
+    });
+  }
+  const after = await invokeBounded(runner, 'git', [
+    'ls-remote', '--heads', state.remote, expectedRef
+  ], state.repositoryRoot);
+  if (after.exitCode !== 0 || parseExactRemoteRef(after.stdout, expectedRef)) {
+    throw new ProjectsPrError('Remote branch deletion could not be verified.', {
+      code: 'cleanup_verification_failed', exitCode: after.exitCode
+    });
+  }
+  return {
+    status: 'deleted',
+    reason: null,
+    deletedByController: true,
+    expectedOid,
+    lease
+  };
+}
+
+function pullNumberReason(value) {
+  return Number.isSafeInteger(value) ? `dependent-or-shared-pr-${value}` : 'dependent-or-shared-pr';
+}
+
+function parseExactRemoteRef(output, expectedRef) {
+  const text = String(output ?? '').trim();
+  if (!text) return null;
+  const lines = text.split(/\r?\n/gu);
+  if (lines.length !== 1) {
+    throw new ProjectsPrError('The remote branch observation was ambiguous.', {
+      code: 'cleanup_guard_unavailable'
+    });
+  }
+  const match = lines[0].match(/^([0-9a-f]{40,64})\s+([^\s]+)$/iu);
+  if (!match || match[2] !== expectedRef) {
+    throw new ProjectsPrError('The remote branch observation was malformed or mismatched.', {
+      code: 'cleanup_guard_unavailable'
+    });
+  }
+  return match[1].toLowerCase();
+}
+
+function assertAdminAuthorizationStillExact(observed, authorization) {
+  const expected = authorization.override?.bypassedRequirements;
+  if (!Array.isArray(expected)
+    || JSON.stringify(observed.bypassedRequirements) !== JSON.stringify(expected)
+    || observed.rulesSha256 !== authorization.override?.observedRulesSha256
+    || observed.classicProtectionSha256 !== authorization.override?.classicProtectionSha256) {
+    throw new ProjectsPrError('Observable admin requirements changed after authorization.', {
+      code: 'stale_admin_authorization'
+    });
+  }
+}
+
+async function markPullRequestReady(runner, state, authorization) {
+  const result = await invokeBounded(runner, 'gh', [
+    'pr', 'ready', String(authorization.pullRequest.number),
+    '--repo', state.github.repositorySpecifier
+  ], state.repositoryRoot);
+  if (result.exitCode !== 0) {
+    throw new ProjectsPrError('The authorized draft could not be marked ready.', {
+      code: 'pull_request_ready_failed', exitCode: result.exitCode
+    });
+  }
+}
+
+async function mergeAuthorizedPullRequest(runner, state, authorization, method) {
+  if (authorization.mode === 'admin') {
+    const methodFlag = { merge: '--merge', squash: '--squash', rebase: '--rebase' }[method];
+    const result = await invokeBounded(runner, 'gh', [
+      'pr', 'merge', String(authorization.pullRequest.number),
+      '--repo', state.github.repositorySpecifier,
+      '--admin', '--match-head-commit', authorization.pullRequest.headOid,
+      methodFlag
+    ], state.repositoryRoot);
+    if (result.exitCode !== 0) {
+      throw new ProjectsPrError('The explicit admin merge was refused.', {
+        code: 'admin_merge_refused', exitCode: result.exitCode
+      });
+    }
+    return { requestedBy: 'gh-pr-merge-admin', responseCommitOid: null };
+  }
+  const result = await invokeBounded(runner, 'gh', [
+    'api', '--hostname', state.github.host,
+    '--method', 'PUT',
+    `repos/${state.github.nameWithOwner}/pulls/${authorization.pullRequest.number}/merge`,
+    '-f', `sha=${authorization.pullRequest.headOid}`,
+    '-f', `merge_method=${method}`
+  ], state.repositoryRoot);
+  if (result.exitCode !== 0) {
+    throw new ProjectsPrError('The exact-head reviewed merge was refused.', {
+      code: 'reviewed_merge_refused', exitCode: result.exitCode
+    });
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    throw new ProjectsPrError('GitHub returned an invalid merge receipt.', { code: 'invalid_gh_receipt' });
+  }
+  const responseCommitOid = parseOidLine(parsed?.sha);
+  if (parsed?.merged !== true || !responseCommitOid) {
+    throw new ProjectsPrError('GitHub did not confirm the exact pull request merge.', {
+      code: 'reviewed_merge_refused'
+    });
+  }
+  return { requestedBy: 'github-sync-merge-api', responseCommitOid };
+}
+
+export async function finishProjectsPr(input = {}, dependencies = {}) {
+  const loaded = await loadLifecycle(input, dependencies);
+  const { runner, fsApi, statePath, plan } = loaded;
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  let state = loaded.state;
+  let firstChecks = null;
+  let secondChecks = null;
+  let pullRequest = null;
+  let mergeRequest = null;
+  try {
+    assertCompletedForDelivery(state);
+    assertDeliveryRepositoryAllowed(state);
+    const authorization = state.delivery?.authorization;
+    if (!authorization
+      || !['reviewed', 'admin'].includes(authorization.mode)
+      || authorization.review?.accepted !== true
+      || authorization.owner?.confirmed !== true
+      || authorization.review?.reviewedHead !== authorization.pullRequest?.headOid) {
+      throw new ProjectsPrError('Finish requires an exact reviewed owner authorization receipt.', {
+        code: 'delivery_not_authorized'
+      });
+    }
+    const policy = await readDeliveryPolicy(runner, state, authorization.policy.baseOid);
+    assertPolicyMatchesAuthorization(policy, authorization);
+    if (authorization.mode === 'admin' && !policy.adminOverride.enabled) {
+      throw new ProjectsPrError('Admin override is no longer enabled by the bound policy.', {
+        code: 'admin_override_disabled'
+      });
+    }
+
+    pullRequest = await observeDeliveryPullRequest(runner, state);
+    let recoveredMerged = false;
+    if (pullRequest.merged) {
+      assertAuthorizationMatchesPullRequest(authorization, pullRequest, { requireBaseOid: false });
+      if (!pullRequest.mergeCommitOid || !pullRequest.mergedAt) {
+        throw new ProjectsPrError('The merged pull request receipt is incomplete.', {
+          code: 'invalid_gh_receipt'
+        });
+      }
+      recoveredMerged = !state.delivery?.merged;
+      const prior = state.delivery?.merged;
+      if (prior && (prior.headOid !== authorization.pullRequest.headOid
+        || prior.pullRequestNumber !== authorization.pullRequest.number
+        || prior.mergeCommitOid !== pullRequest.mergeCommitOid)) {
+        throw new ProjectsPrError('The recorded merge does not match GitHub.', {
+          code: 'delivery_identity_mismatch'
+        });
+      }
+      state = {
+        ...state,
+        delivery: {
+          ...state.delivery,
+          phase: 'merged',
+          merged: prior ?? {
+            pullRequestNumber: pullRequest.number,
+            headOid: pullRequest.headOid,
+            mergeCommitOid: pullRequest.mergeCommitOid,
+            mergedAt: pullRequest.mergedAt,
+            recordedAt: now(),
+            requestedBy: 'observed-after-interruption'
+          }
+        },
+        updatedAt: now()
+      };
+      await writeState(fsApi, statePath, state);
+    } else {
+      if (pullRequest.state !== 'OPEN') {
+        throw new ProjectsPrError('The authorized pull request is not open.', {
+          code: 'delivery_pull_request_not_open'
+        });
+      }
+      assertAuthorizationMatchesPullRequest(authorization, pullRequest, { requireBaseOid: true });
+      await assertStandaloneDelivery(runner, state, pullRequest);
+      firstChecks = await observeRequiredChecks(runner, state, authorization, policy);
+      if (!firstChecks.passed) {
+        return {
+          ...deliveryReceipt('finish', plan, statePath, state, 'waiting', {
+            authorization,
+            checks: firstChecks,
+            mergeRequested: false,
+            cleanup: state.delivery?.cleanup ?? null
+          }),
+          recovery: deliveryRecovery('finish', plan)
+        };
+      }
+
+      if (authorization.mode === 'admin') {
+        const observedAdmin = await observeAdminRequirements(
+          runner, state, authorization, policy.reviewedMerge.method
+        );
+        assertAdminAuthorizationStillExact(observedAdmin, authorization);
+      }
+      const beforeReady = await observeDeliveryPullRequest(runner, state);
+      assertAuthorizationMatchesPullRequest(authorization, beforeReady, { requireBaseOid: true });
+      if (beforeReady.merged || beforeReady.state !== 'OPEN') {
+        throw new ProjectsPrError('The pull request changed before readiness.', {
+          code: 'stale_delivery_authorization'
+        });
+      }
+      if (beforeReady.draft) {
+        await markPullRequestReady(runner, state, authorization);
+        state = {
+          ...state,
+          delivery: { ...state.delivery, phase: 'ready', readyAt: now() },
+          updatedAt: now()
+        };
+        await writeState(fsApi, statePath, state);
+      }
+
+      const beforeMerge = await observeDeliveryPullRequest(runner, state);
+      assertAuthorizationMatchesPullRequest(authorization, beforeMerge, { requireBaseOid: true });
+      if (beforeMerge.merged || beforeMerge.state !== 'OPEN' || beforeMerge.draft) {
+        throw new ProjectsPrError('The pull request is not the exact ready pull request.', {
+          code: 'stale_delivery_authorization'
+        });
+      }
+      await assertStandaloneDelivery(runner, state, beforeMerge);
+      secondChecks = await observeRequiredChecks(runner, state, authorization, policy);
+      if (!secondChecks.passed) {
+        return {
+          ...deliveryReceipt('finish', plan, statePath, state, 'waiting', {
+            authorization,
+            checks: secondChecks,
+            mergeRequested: false,
+            cleanup: state.delivery?.cleanup ?? null
+          }),
+          recovery: deliveryRecovery('finish', plan)
+        };
+      }
+      if (authorization.mode === 'admin') {
+        const observedAdmin = await observeAdminRequirements(
+          runner, state, authorization, policy.reviewedMerge.method
+        );
+        assertAdminAuthorizationStillExact(observedAdmin, authorization);
+      }
+      const exactBeforeMutation = await observeDeliveryPullRequest(runner, state);
+      assertAuthorizationMatchesPullRequest(authorization, exactBeforeMutation, { requireBaseOid: true });
+      if (exactBeforeMutation.merged || exactBeforeMutation.state !== 'OPEN' || exactBeforeMutation.draft) {
+        throw new ProjectsPrError('The pull request changed immediately before merge.', {
+          code: 'stale_delivery_authorization'
+        });
+      }
+      if (authorization.mode === 'reviewed'
+        && (exactBeforeMutation.mergeable !== true || exactBeforeMutation.mergeableState !== 'clean')) {
+        throw new ProjectsPrError('Ordinary delivery requires GitHub to report the exact pull request clean and mergeable.', {
+          code: 'ordinary_merge_not_clean'
+        });
+      }
+      if (authorization.mode === 'admin'
+        && (exactBeforeMutation.mergeable !== true
+          || !['blocked', 'clean'].includes(exactBeforeMutation.mergeableState))) {
+        throw new ProjectsPrError('Admin delivery requires a conclusive mergeable GitHub state.', {
+          code: 'admin_requirements_unavailable'
+        });
+      }
+      mergeRequest = await mergeAuthorizedPullRequest(
+        runner, state, authorization, policy.reviewedMerge.method
+      );
+      pullRequest = await observeDeliveryPullRequest(runner, state);
+      assertAuthorizationMatchesPullRequest(authorization, pullRequest, { requireBaseOid: false });
+      if (!pullRequest.merged || !pullRequest.mergeCommitOid || !pullRequest.mergedAt) {
+        throw new ProjectsPrError('GitHub did not verify the authorized pull request as merged.', {
+          code: 'merge_verification_failed'
+        });
+      }
+      if (mergeRequest.responseCommitOid
+        && mergeRequest.responseCommitOid !== pullRequest.mergeCommitOid) {
+        throw new ProjectsPrError('GitHub merge receipts disagree on the merge commit.', {
+          code: 'merge_verification_failed'
+        });
+      }
+      state = {
+        ...state,
+        delivery: {
+          ...state.delivery,
+          phase: 'merged',
+          merged: {
+            pullRequestNumber: pullRequest.number,
+            headOid: pullRequest.headOid,
+            mergeCommitOid: pullRequest.mergeCommitOid,
+            mergedAt: pullRequest.mergedAt,
+            recordedAt: now(),
+            requestedBy: mergeRequest.requestedBy
+          }
+        },
+        updatedAt: now()
+      };
+      await writeState(fsApi, statePath, state);
+    }
+
+    let cleanup;
+    if (['deleted', 'already-absent'].includes(state.delivery?.cleanup?.status)) {
+      const expectedRef = `refs/heads/${state.branch}`;
+      const remote = await invokeBounded(runner, 'git', [
+        'ls-remote', '--heads', state.remote, expectedRef
+      ], state.repositoryRoot);
+      if (remote.exitCode !== 0) {
+        throw new ProjectsPrError('The terminal remote branch cleanup cannot be reverified.', {
+          code: 'cleanup_verification_failed', exitCode: remote.exitCode
+        });
+      }
+      if (parseExactRemoteRef(remote.stdout, expectedRef)) {
+        throw new ProjectsPrError('A remotely absent branch reappeared; the old authorization will not delete it.', {
+          code: 'remote_branch_reappeared'
+        });
+      }
+      cleanup = state.delivery.cleanup;
+    } else {
+      cleanup = await cleanupMergedRemoteBranch(runner, state, authorization, policy);
+    }
+    const waitingForCleanup = cleanup.status === 'waiting';
+    state = {
+      ...state,
+      delivery: {
+        ...state.delivery,
+        phase: waitingForCleanup ? 'merged' : 'delivered',
+        cleanup: { ...cleanup, recordedAt: now() }
+      },
+      updatedAt: now()
+    };
+    await writeState(fsApi, statePath, state);
+    const receipt = deliveryReceipt('finish', plan, statePath, state,
+      waitingForCleanup ? 'waiting' : 'completed', {
+        resumed: recoveredMerged || state.delivery.merged.requestedBy === 'observed-after-interruption',
+        authorization,
+        checks: secondChecks ?? firstChecks,
+        merge: state.delivery.merged,
+        cleanup: state.delivery.cleanup,
+        localBranchPreserved: true,
+        evidencePreserved: true
+      });
+    return waitingForCleanup
+      ? { ...receipt, recovery: deliveryRecovery('finish', plan) }
+      : receipt;
+  } catch (error) {
+    throw deliveryFailure(error, 'finish', plan, statePath, state, {
+      firstChecks,
+      secondChecks,
+      pullRequest,
+      mergeRequest,
+      localBranchPreserved: true,
+      evidencePreserved: true
+    });
+  }
+}
+
 async function ensureFinalizeWorktree(state, observed, runner) {
   if (!observed.localBranch.exists || !observed.worktree.registered || !observed.worktree.pathExists) {
     throw new ProjectsPrError('The prepared local branch and exact worktree must still exist.', {
@@ -1245,7 +2495,7 @@ export async function finalizeProjectsPr(input = {}, dependencies = {}) {
         'Created from one reviewed, low-energy Projects worker handoff.',
         `Verification command SHA-256: ${state.verificationCommandSha256}`,
         '',
-        'Owner review is required. This controller never merges or enables auto-merge.'
+        'Owner review is required. Finalization never merges or enables auto-merge.'
       ].join('\n');
       const created = await checked(runner, 'gh', [
         'pr', 'create', '--repo', state.github.repositorySpecifier, '--draft',

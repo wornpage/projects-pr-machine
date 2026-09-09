@@ -214,10 +214,6 @@ class ControllerRunner {
 async function fixture(t) {
   const repositoryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'projects-pr-v2-'));
   await fs.mkdir(path.join(repositoryRoot, '.git'));
-  t.after(async () => {
-    await fs.rm(repositoryRoot, { recursive: true, force: true });
-    await fs.rm(path.join(path.dirname(repositoryRoot), '.projects-pr-worktrees'), { recursive: true, force: true });
-  });
   const runner = new ControllerRunner(repositoryRoot);
   const input = {
     repositoryRoot,
@@ -227,6 +223,11 @@ async function fixture(t) {
     remote: 'origin',
     verificationCommand: 'node --test focused.test.mjs'
   };
+  const ownedWorktree = createProjectsPrPlan(input).worktreePath;
+  t.after(async () => {
+    await fs.rm(repositoryRoot, { recursive: true, force: true });
+    await fs.rm(ownedWorktree, { recursive: true, force: true });
+  });
   const dependencies = { runner: runner.invoke.bind(runner), nodeVersion: '22.0.0' };
   return { repositoryRoot, runner, input, dependencies };
 }
@@ -645,7 +646,7 @@ test('abort removes only an unchanged, unpushed preparation and refuses worker c
   assert.equal(changed.runner.worktreeRegistered, true);
 });
 
-test('CLI grammar is a hard cutover to doctor, prepare, status, finalize, and abort', async () => {
+test('draft lifecycle grammar remains exact and rejects legacy merge aliases', async () => {
   assert.equal(parseProjectsPrArgs(['doctor']).command, 'doctor');
   assert.equal(parseProjectsPrArgs(['status', '--pack-id', 'task-one']).packId, 'task-one');
   for (const argv of [

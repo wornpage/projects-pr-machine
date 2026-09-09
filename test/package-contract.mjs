@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -39,17 +39,32 @@ try {
     cwd: temp,
     stdio: 'ignore'
   });
-  const help = execFileSync(process.execPath, [
-    path.join(temp, 'node_modules', '@wornpage', 'projects-pr', 'integrations', 'codex', 'projects-pack-delegation', 'skills', 'projects-pack-delegation', 'scripts', 'projects-pr.mjs'),
-    '--help'
-  ], { cwd: temp, encoding: 'utf8' });
+  const packedCli = path.join(temp, 'node_modules', '@wornpage', 'projects-pr', 'integrations', 'codex', 'projects-pack-delegation', 'skills', 'projects-pack-delegation', 'scripts', 'projects-pr.mjs');
+  const help = execFileSync(process.execPath, [packedCli, '--help'], {
+    cwd: temp, encoding: 'utf8'
+  });
   assert.match(help, /projects-pr v2/u);
+  assert.match(help, /authorize-admin/u);
+  assert.match(help, /finish/u);
+  for (const command of ['authorize', 'authorize-admin', 'finish']) {
+    const commandHelp = execFileSync(process.execPath, [packedCli, command, '--help'], {
+      cwd: temp, encoding: 'utf8'
+    });
+    assert.match(commandHelp, /projects-pr v2/u);
+    const guarded = spawnSync(process.execPath, [packedCli, command], {
+      cwd: temp, encoding: 'utf8'
+    });
+    assert.equal(guarded.status, 1, command);
+    const failure = JSON.parse(guarded.stderr);
+    assert.equal(failure.command, command);
+    assert.equal(failure.error.code, 'invalid_input');
+  }
   const imported = execFileSync(process.execPath, [
     '--input-type=module',
     '--eval',
-    "import('@wornpage/projects-pr').then((m) => console.log(typeof m.runProjectsPrDoctor))"
+    "import('@wornpage/projects-pr').then((m) => console.log([m.runProjectsPrDoctor,m.authorizeProjectsPr,m.authorizeAdminProjectsPr,m.finishProjectsPr].map((v)=>typeof v).join(',')))"
   ], { cwd: temp, encoding: 'utf8' }).trim();
-  assert.equal(imported, 'function');
+  assert.equal(imported, 'function,function,function,function');
   fs.rmSync(path.join(root, tarball), { force: true });
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });

@@ -5,7 +5,10 @@ import {
   PROJECTS_PR_SCHEMA_VERSION,
   ProjectsPrError,
   abortProjectsPr,
+  authorizeAdminProjectsPr,
+  authorizeProjectsPr,
   finalizeProjectsPr,
+  finishProjectsPr,
   prepareProjectsPr,
   runProjectsPrDoctor,
   stackProjectsPr,
@@ -15,8 +18,8 @@ import {
 const HELP = `projects-pr v2
 
 Prepare and finalize reviewed, low-energy Projects workers as draft PRs.
-Optionally link two or more completed drafts into GitHub's public-preview stack.
-There is no one-shot worker-command mode and this controller never merges.
+Optionally link completed drafts or, under trusted policy and fresh authorization,
+finish exactly one reviewed PR. Delivery options are off by default.
 
 Usage:
   projects-pr doctor [--repo PATH] [--base BRANCH] [--remote NAME] [--stack]
@@ -24,6 +27,12 @@ Usage:
     --verify-command COMMAND [--repo PATH] [--remote NAME]
   projects-pr status --pack-id ID [--repo PATH]
   projects-pr finalize --pack-id ID [--repo PATH]
+  projects-pr authorize --pack-id ID --reviewed-head SHA \
+    --confirm-review --confirm-owner [--repo PATH]
+  projects-pr authorize-admin --pack-id ID --reviewed-head SHA \
+    --confirm-review --confirm-owner --reason TEXT --bypass REQUIREMENT \
+    [--bypass REQUIREMENT ...] [--repo PATH]
+  projects-pr finish --pack-id ID [--repo PATH]
   projects-pr stack --pack-id BOTTOM --pack-id NEXT [--pack-id TOP ...] \\
     --base BRANCH [--repo PATH] [--remote NAME]
   projects-pr abort --pack-id ID [--repo PATH]
@@ -33,6 +42,10 @@ Lifecycle:
   prepare   Create the exact isolated branch/worktree and resumable state.
   status    Observe local, remote, worktree, and PR state without mutation.
   finalize  Verify, push the exact ref, create/verify a draft PR, and clean up.
+  authorize Bind reviewed HEAD and owner approval to trusted base-SHA policy.
+  authorize-admin
+             Separately bind an explicit reason and exact observable bypasses.
+  finish     Recheck exact HEAD/checks and perform one authorized merge/cleanup.
   stack     Link completed drafts bottom-to-top with official github/gh-stack.
   abort     Remove only an unchanged, unpushed prepared worktree and branch.
 
@@ -44,6 +57,11 @@ Options:
   --base BRANCH            Clean, currently checked-out base branch
   --remote NAME            Git remote (default: origin)
   --verify-command COMMAND Fixed command stored at prepare and run at finalize
+  --reviewed-head SHA      Exact finalized head accepted by independent review
+  --confirm-review         Attest the coordinator accepted that exact reviewed head
+  --confirm-owner          Attest explicit repository-owner delivery approval
+  --reason TEXT            Required admin-override reason (stored, not interpolated)
+  --bypass REQUIREMENT     Exact observed GitHub requirement; repeat as needed
   --stack                   Require official github/gh-stack capability in doctor
   --help                    Show this help
 `;
@@ -71,6 +89,26 @@ const COMMAND_OPTIONS = Object.freeze({
     ['--pack-id', 'packId'],
     ['--repo', 'repositoryRoot']
   ]),
+  authorize: new Map([
+    ['--pack-id', 'packId'],
+    ['--reviewed-head', 'reviewedHead'],
+    ['--confirm-review', 'confirmReview'],
+    ['--confirm-owner', 'confirmOwner'],
+    ['--repo', 'repositoryRoot']
+  ]),
+  'authorize-admin': new Map([
+    ['--pack-id', 'packId'],
+    ['--reviewed-head', 'reviewedHead'],
+    ['--confirm-review', 'confirmReview'],
+    ['--confirm-owner', 'confirmOwner'],
+    ['--reason', 'reason'],
+    ['--bypass', 'bypassedRequirements'],
+    ['--repo', 'repositoryRoot']
+  ]),
+  finish: new Map([
+    ['--pack-id', 'packId'],
+    ['--repo', 'repositoryRoot']
+  ]),
   stack: new Map([
     ['--pack-id', 'packIds'],
     ['--base', 'baseBranch'],
@@ -94,20 +132,20 @@ export function parseProjectsPrArgs(argv) {
     if (argument === '--help') return { help: true };
     const field = allowed.get(argument);
     if (!field) throw new ProjectsPrError(`Unknown option for ${command}: ${argument}`, { code: 'invalid_input' });
-    if (field === 'stack') {
-      if (options.stack === true) {
+    if (['stack', 'confirmReview', 'confirmOwner'].includes(field)) {
+      if (options[field] === true) {
         throw new ProjectsPrError(`${argument} may be supplied only once.`, { code: 'invalid_input' });
       }
-      options.stack = true;
+      options[field] = true;
       continue;
     }
     const value = argv[index + 1];
     if (value === undefined || value.startsWith('--')) {
       throw new ProjectsPrError(`${argument} requires a value.`, { code: 'invalid_input' });
     }
-    if (field === 'packIds') {
-      options.packIds ??= [];
-      options.packIds.push(value);
+    if (['packIds', 'bypassedRequirements'].includes(field)) {
+      options[field] ??= [];
+      options[field].push(value);
       index += 1;
       continue;
     }
@@ -134,6 +172,9 @@ export async function main(argv = process.argv.slice(2), io = console, dependenc
     if (options.command === 'prepare') receipt = await prepareProjectsPr(options, dependencies);
     if (options.command === 'status') receipt = await statusProjectsPr(options, dependencies);
     if (options.command === 'finalize') receipt = await finalizeProjectsPr(options, dependencies);
+    if (options.command === 'authorize') receipt = await authorizeProjectsPr(options, dependencies);
+    if (options.command === 'authorize-admin') receipt = await authorizeAdminProjectsPr(options, dependencies);
+    if (options.command === 'finish') receipt = await finishProjectsPr(options, dependencies);
     if (options.command === 'stack') receipt = await stackProjectsPr(options, dependencies);
     if (options.command === 'abort') receipt = await abortProjectsPr(options, dependencies);
     io.log(JSON.stringify(receipt, null, 2));
