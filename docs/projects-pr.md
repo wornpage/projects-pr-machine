@@ -7,8 +7,10 @@ harness-native side-chat worker can receive the exact prepared worktree:
 `doctor → delegate_pack → prepare → spawn side-chat task → bind_delegation_thread → worker → review → finalize`
 
 The controller does not delegate or run the worker, submit or review Worker
-Handoff v1, complete a parent pack, merge, auto-merge, close a pull request, or
-deploy. The coordinator owns those Projects and owner-decision boundaries.
+Handoff v1, complete a parent pack, auto-merge, close a pull request, or deploy.
+The coordinator owns those Projects boundaries. `finalize` and `stack` remain
+draft-only; the separate delivery path described below requires a trusted
+repository policy plus new exact-head review and owner confirmations.
 After the harness creates the side-chat task or thread, the coordinator binds
 the returned child `packId` to its provider-neutral thread ID and, when
 available, its absolute HTTPS URL before the worker submits its terminal
@@ -25,6 +27,12 @@ projects-pr prepare --pack-id ID --title TEXT --base BRANCH \
   --verify-command COMMAND [--repo PATH] [--remote NAME]
 projects-pr status --pack-id ID [--repo PATH]
 projects-pr finalize --pack-id ID [--repo PATH]
+projects-pr authorize --pack-id ID --reviewed-head SHA \
+  --confirm-review --confirm-owner [--repo PATH]
+projects-pr authorize-admin --pack-id ID --reviewed-head SHA \
+  --confirm-review --confirm-owner --reason TEXT \
+  --bypass REQUIREMENT [--bypass REQUIREMENT ...] [--repo PATH]
+projects-pr finish --pack-id ID [--repo PATH]
 projects-pr abort --pack-id ID [--repo PATH]
 projects-pr stack --pack-id BOTTOM --pack-id NEXT [--pack-id TOP ...] \
   --base BRANCH [--repo PATH] [--remote NAME]
@@ -39,7 +47,7 @@ fallback in v2.
 | --- | --- |
 | Worker capacity | Exactly one harness-native worker |
 | Energy | Low |
-| Pull request state | Draft only |
+| Pull request state | `finalize` and `stack` are draft only |
 | State location | `<absolute-git-common-dir>/projects-pr-v2/<packId>.json` |
 | Verification | One command fixed and hashed at `prepare` |
 | Push scope | `HEAD:refs/heads/<derived-branch>` only |
@@ -47,7 +55,7 @@ fallback in v2.
 | Base binding | Checked-out local base commit must equal the declared remote base commit |
 | Success cleanup | Remove only the exact clean prepared worktree |
 | Failure cleanup | Preserve the worktree and local branch for diagnosis |
-| Merge authority | Owner-controlled; never requested by this controller |
+| Merge authority | Manual unless trusted policy and a fresh, separate authorization opt in one exact PR |
 
 `doctor` requires no pack ID or title and is fully read-only. It checks Node
 22+, Git, PowerShell 7 on Windows or `/bin/sh` on Unix, the exact clean Git top
@@ -82,6 +90,91 @@ Finalization is resumable. An exact pre-existing remote ref or matching open
 draft is reused; any mismatched ref, non-draft PR, wrong base/head, wrong commit,
 duplicate PR, or inaccessible remote state fails loudly. A completed state is
 idempotent and returns its already-verified draft receipt.
+
+## Optional reviewed delivery (unreleased source)
+
+The tagged beta package remains draft-only. The current source adds three
+separate commands; none is called by `finalize`, `stack`, or the default skill
+flow:
+
+1. `authorize` requires `--reviewed-head`, `--confirm-review`, and
+   `--confirm-owner`. It freshly verifies the finalized open draft and binds the
+   exact GitHub host/repository, PR number and URL, base ref and SHA, derived
+   head ref and reviewed SHA, and trusted policy digest.
+2. `finish` consumes only that stored authorization. It does one bounded
+   observation pass and returns `waiting` with the exact resume command when a
+   configured check is not successful. Immediately before each external
+   mutation it rechecks exact identity and head. It makes the draft ready,
+   observes checks again, requires GitHub to report ordinary merge state
+   `clean`, then calls the synchronous one-PR merge endpoint with the authorized
+   head SHA. It never uses native auto-merge, a merge queue, or the asynchronous
+   stacked-merge endpoint.
+3. `authorize-admin` is disjoint from normal authorization. It additionally
+   requires a nonempty reason and repeated `--bypass` values that exactly equal
+   the freshly observable supported GitHub ruleset requirements. The only
+   supported values are `github-ruleset:pull-request`,
+   `github-ruleset:merge-queue`, and `github-ruleset:update`. Classic branch
+   protection, repository-required status checks, unknown rules, inaccessible
+   observations, and configurations needing no bypass are refused. A later
+   normal merge failure never enables this path.
+
+The admin reason is persisted in local state and appears in receipts. Do not
+put credentials, tokens, personal data, or other secrets in it.
+
+All delivery settings are off when `.github/projects-pr-policy.json` is absent
+at the exact PR base SHA. Policy is fetched from that immutable GitHub object,
+never from the PR checkout or head. A present file is strict: malformed JSON,
+unknown fields, duplicate identities, or repository mismatch fails loudly.
+
+```json
+{
+  "schemaVersion": 1,
+  "repository": "github.com/OWNER/REPOSITORY",
+  "reviewedMerge": {
+    "enabled": true,
+    "method": "squash",
+    "requiredChecks": [
+      { "kind": "check-run", "name": "test", "publisherId": 15368 }
+    ]
+  },
+  "remoteBranchCleanup": {
+    "enabled": false,
+    "protectedBranches": ["release"]
+  },
+  "adminOverride": { "enabled": false }
+}
+```
+
+`kind` is `check-run` or `status-context`; `publisherId` is respectively the
+GitHub App ID or status creator ID. Only one exact publisher/name observation
+may match. A check run passes only with `status: completed` and
+`conclusion: success`; a status context passes only with `state: success`.
+Missing, pending, failed, skipped, neutral, cancelled, stale-SHA, ambiguous,
+unknown, incomplete, or API-error observations never merge. New commits do not
+follow the branch: they invalidate the review and authorization.
+
+Coordinator review/owner confirmations are attestations supplied to the local
+controller. They are not independent GitHub review approvals, do not replace
+branch protection, and cannot constrain merges performed outside this tool.
+The exact-head merge guard is atomic for the PR head, not the base branch;
+external base updates remain a documented concurrency boundary.
+
+After a verified merge, optional cleanup considers only the controller-derived
+remote branch at the reviewed SHA. It retains default, policy-protected,
+shared, stack-base, and dependent-PR branches. It requires exactly one
+credential-free, non-mirror push URL with no custom port and exact repository
+identity, then uses
+`git push --force-with-lease=refs/heads/BRANCH:REVIEWED_SHA REMOTE :refs/heads/BRANCH`.
+The explicit ref-value lease rejects a different ref value at deletion time.
+It cannot distinguish delete-and-recreate-at-the-same-SHA history entirely
+between observations; terminal recorded absence/recreation is guarded
+separately. Default/dependency observations are not transactionally locked.
+Already absent, deleted by this controller, waiting, and policy-retained are
+distinct receipts. A terminal absent/deleted receipt never deletes a later
+recreated ref. Local branches, worktrees, state, and evidence are always kept.
+
+`github.com/wornpage/projects-webmcp-extension` is a built-in frozen delivery
+target. Neither normal nor admin authorization can override that boundary.
 
 `abort` is intentionally narrow. It removes only an unpushed, PR-free,
 unchanged prepared worktree whose branch is still at the recorded base commit.
@@ -136,14 +229,24 @@ tested command hash while retaining
 `merge.ownerControlled: true`, `autoMerge: false`, and
 `status: "not_requested"`.
 
+Delivery authorization is nested separately under state `delivery`; it does
+not change the completed draft lifecycle phase. Delivery receipts use kind
+`projects-pr-delivery`, record authorization mode, exact identity and policy
+binding, check observations, merged head and merge commit, and cleanup outcome.
+If GitHub merged the exact authorized PR but local state persistence failed,
+`finish` verifies that already-merged identity and records it without issuing a
+second merge request.
+
 The public library entry point is `@wornpage/projects-pr`. Its runner and
-filesystem are injectable; focused tests replace all Git, shell, filesystem,
-and GitHub CLI effects and create no real branch, worktree, push, or pull
-request.
+filesystem are injectable; focused tests replace remote GitHub and controller
+mutation effects. A disposable local bare-Git fixture proves exact-value lease
+failure without touching a hosted repository. Tests create no GitHub branch,
+worktree, push, merge, or pull request.
 
 ## Beta limitations
 
 Run only one controller process per repository. Cross-process state locking is
-not implemented, and child Git, shell, and GitHub processes do not yet have
-controller-enforced timeouts. These are explicit beta limits, not silent
-recovery paths.
+not implemented, and existing draft-lifecycle child processes do not yet have
+controller-enforced timeouts. Delivery effects use a 30-second per-process
+bound and a one-shot resume receipt instead of a daemon or indefinite watch.
+These are explicit beta limits, not silent recovery paths.
