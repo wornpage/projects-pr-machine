@@ -1264,6 +1264,13 @@ const DELIVERY_POLICY_QUERY = [
   '}}'
 ].join('');
 
+const CLASSIC_PROTECTION_QUERY = [
+  'query($owner:String!,$name:String!,$qualifiedName:String!){',
+  'repository(owner:$owner,name:$name){viewerPermission ',
+  'ref(qualifiedName:$qualifiedName){name branchProtectionRule{id pattern}}',
+  '}}'
+].join('');
+
 async function readDeliveryPolicy(runner, state, baseOid) {
   const [owner, name] = state.github.nameWithOwner.split('/');
   const result = await invokeBounded(runner, 'gh', [
@@ -1480,17 +1487,60 @@ async function observeRequiredChecks(runner, state, authorization, policy) {
   };
 }
 
-function parseIncludedHttp(output) {
-  const matches = [...String(output).matchAll(/^HTTP\/\S+\s+(\d{3})(?:\s|$)/gmu)];
-  if (matches.length === 0) return null;
-  const match = matches.at(-1);
-  const start = match.index;
-  const unixBreak = output.indexOf('\n\n', start);
-  const windowsBreak = output.indexOf('\r\n\r\n', start);
-  const breaks = [unixBreak >= 0 ? unixBreak + 2 : -1, windowsBreak >= 0 ? windowsBreak + 4 : -1]
-    .filter((value) => value >= 0);
-  if (breaks.length === 0) return null;
-  return { status: Number(match[1]), body: output.slice(Math.min(...breaks)) };
+async function observeClassicBranchProtection(runner, state, baseBranch, aggregateProtected) {
+  const [owner, name] = state.github.nameWithOwner.split('/');
+  const result = await invokeBounded(runner, 'gh', [
+    'api', 'graphql', '--hostname', state.github.host,
+    '-f', `query=${CLASSIC_PROTECTION_QUERY}`,
+    '-F', `owner=${owner}`,
+    '-F', `name=${name}`,
+    '-F', `qualifiedName=refs/heads/${baseBranch}`
+  ], state.repositoryRoot);
+  if (result.exitCode !== 0) {
+    throw new ProjectsPrError('Classic branch protection observation failed.', {
+      code: 'admin_requirements_unavailable', exitCode: result.exitCode
+    });
+  }
+  let response;
+  try {
+    response = JSON.parse(result.stdout);
+  } catch {
+    throw new ProjectsPrError('Classic branch protection observation returned invalid JSON.', {
+      code: 'admin_requirements_unavailable'
+    });
+  }
+  if (Array.isArray(response?.errors) && response.errors.length > 0) {
+    throw new ProjectsPrError('Classic branch protection observation was incomplete.', {
+      code: 'admin_requirements_unavailable'
+    });
+  }
+  const repository = response?.data?.repository;
+  const ref = repository?.ref;
+  if (repository?.viewerPermission !== 'ADMIN'
+    || ref?.name !== baseBranch
+    || !Object.hasOwn(ref ?? {}, 'branchProtectionRule')) {
+    throw new ProjectsPrError('Classic branch protection requires an exact administrator-visible ref observation.', {
+      code: 'admin_requirements_unavailable'
+    });
+  }
+  if (ref.branchProtectionRule !== null) {
+    if (typeof ref.branchProtectionRule?.id !== 'string'
+      || typeof ref.branchProtectionRule?.pattern !== 'string') {
+      throw new ProjectsPrError('Classic branch protection observation was malformed.', {
+        code: 'admin_requirements_unavailable'
+      });
+    }
+    throw new ProjectsPrError('Admin delivery does not bypass classic branch protection requirements.', {
+      code: 'unsupported_admin_requirements'
+    });
+  }
+  const receipt = {
+    aggregateProtected,
+    viewerPermission: repository.viewerPermission,
+    refName: ref.name,
+    branchProtectionRule: null
+  };
+  return { sha256: sha256(canonicalJson(receipt)) };
 }
 
 async function observeAdminRequirements(runner, state, authorization, method) {
@@ -1512,26 +1562,9 @@ async function observeAdminRequirements(runner, state, authorization, method) {
     });
   }
 
-  const protectionResult = await invokeBounded(runner, 'gh', [
-    'api', '--hostname', state.github.host, '--include',
-    `repos/${state.github.nameWithOwner}/branches/${encodedBase}/protection`
-  ], state.repositoryRoot);
-  const protection = parseIncludedHttp(protectionResult.stdout);
-  if (!protection || ![200, 404].includes(protection.status)) {
-    throw new ProjectsPrError('Classic branch protection could not be conclusively observed.', {
-      code: 'admin_requirements_unavailable', exitCode: protectionResult.exitCode
-    });
-  }
-  if (protection.status === 200) {
-    throw new ProjectsPrError('Admin delivery does not bypass classic branch protection requirements.', {
-      code: 'unsupported_admin_requirements'
-    });
-  }
-  if (protection.status === 404 && branch.protected !== false) {
-    throw new ProjectsPrError('A missing classic-protection response is not conclusive for this protected branch.', {
-      code: 'admin_requirements_unavailable'
-    });
-  }
+  const classicProtection = await observeClassicBranchProtection(
+    runner, state, authorization.pullRequest.base, branch.protected
+  );
 
   const activeRules = pages.flat();
   const types = [...new Set(activeRules.map((rule) => String(rule?.type ?? '')))].sort();
@@ -1562,7 +1595,11 @@ async function observeAdminRequirements(runner, state, authorization, method) {
     });
   }
   const canonicalRules = activeRules.map((rule) => canonicalJson(rule)).sort();
-  return { bypassedRequirements, rulesSha256: sha256(JSON.stringify(canonicalRules)) };
+  return {
+    bypassedRequirements,
+    rulesSha256: sha256(JSON.stringify(canonicalRules)),
+    classicProtectionSha256: classicProtection.sha256
+  };
 }
 
 function canonicalJson(value) {
@@ -1745,7 +1782,8 @@ async function authorizeDelivery(input, dependencies, mode) {
       override = {
         reason,
         bypassedRequirements: requested,
-        observedRulesSha256: observed.rulesSha256
+        observedRulesSha256: observed.rulesSha256,
+        classicProtectionSha256: observed.classicProtectionSha256
       };
     }
 
@@ -1980,7 +2018,8 @@ function assertAdminAuthorizationStillExact(observed, authorization) {
   const expected = authorization.override?.bypassedRequirements;
   if (!Array.isArray(expected)
     || JSON.stringify(observed.bypassedRequirements) !== JSON.stringify(expected)
-    || observed.rulesSha256 !== authorization.override?.observedRulesSha256) {
+    || observed.rulesSha256 !== authorization.override?.observedRulesSha256
+    || observed.classicProtectionSha256 !== authorization.override?.classicProtectionSha256) {
     throw new ProjectsPrError('Observable admin requirements changed after authorization.', {
       code: 'stale_admin_authorization'
     });

@@ -60,7 +60,11 @@ class DeliveryRunner {
     this.openExtras = [];
     this.rules = [];
     this.branchProtected = false;
-    this.classicProtectionStatus = 404;
+    this.viewerPermission = 'ADMIN';
+    this.classicRefName = 'main';
+    this.classicBranchProtectionRule = null;
+    this.failClassicProtectionObservation = false;
+    this.classicProtectionExitCode = 0;
     this.failNormalMerge = false;
     this.failCheckObservation = false;
     this.raceDelete = false;
@@ -131,6 +135,26 @@ class DeliveryRunner {
     }
     if (args[0] !== 'api') throw new Error(`unexpected gh invocation: ${args.join(' ')}`);
     if (args[1] === 'graphql') {
+      const query = args.find((argument) => argument.startsWith('query='));
+      if (query?.includes('branchProtectionRule')) {
+        return {
+          exitCode: this.classicProtectionExitCode,
+          stdout: JSON.stringify(this.failClassicProtectionObservation
+            ? { errors: [{ message: 'forbidden' }], data: { repository: null } }
+            : {
+                data: {
+                  repository: {
+                    viewerPermission: this.viewerPermission,
+                    ref: this.classicRefName === null ? null : {
+                      name: this.classicRefName,
+                      branchProtectionRule: this.classicBranchProtectionRule
+                    }
+                  }
+                }
+              }),
+          stderr: ''
+        };
+      }
       return {
         exitCode: 0,
         stdout: JSON.stringify({
@@ -175,13 +199,6 @@ class DeliveryRunner {
     }
     if (endpoint === 'repos/acme/repo/branches/main') {
       return { exitCode: 0, stdout: JSON.stringify({ protected: this.branchProtected }), stderr: '' };
-    }
-    if (endpoint === 'repos/acme/repo/branches/main/protection') {
-      return {
-        exitCode: this.classicProtectionStatus === 200 ? 0 : 1,
-        stdout: `HTTP/2.0 ${this.classicProtectionStatus} ${this.classicProtectionStatus === 200 ? 'OK' : 'Not Found'}\n\n{}`,
-        stderr: ''
-      };
     }
     if (endpoint === 'repos/acme/repo/pulls/7/merge' && args.includes('--method')) {
       if (this.failNormalMerge) return { exitCode: 1, stdout: '', stderr: 'blocked' };
@@ -430,6 +447,7 @@ test('unknown policy fields and stacked dependencies fail loudly before authoriz
 test('admin authorization is separate, exact, and limited to observable ruleset bypasses', async (t) => {
   const subject = await fixture(t);
   subject.runner.policyText = policy({ adminOverride: { enabled: true } });
+  subject.runner.branchProtected = true;
   subject.runner.rules = [{
     type: 'pull_request', ruleset_id: 42,
     parameters: { required_approving_review_count: 1 }
@@ -479,11 +497,12 @@ test('admin authorization is invalidated when rule parameters change without cha
   assert.equal(subject.runner.pr.draft, true);
 });
 
-test('admin refuses ambiguous protection absence and repository-required checks', async (t) => {
+test('admin refuses incomplete or actual classic protection and repository-required checks', async (t) => {
   const hidden = await fixture(t);
   hidden.runner.policyText = policy({ adminOverride: { enabled: true } });
   hidden.runner.rules = [{ type: 'pull_request', ruleset_id: 42, parameters: {} }];
   hidden.runner.branchProtected = true;
+  hidden.runner.viewerPermission = 'WRITE';
   await assert.rejects(authorizeAdminProjectsPr({
     ...hidden.input,
     reviewedHead: HEAD_OID,
@@ -493,6 +512,57 @@ test('admin refuses ambiguous protection absence and repository-required checks'
     bypassedRequirements: ['github-ruleset:pull-request']
   }, hidden.dependencies), (error) => {
     assert.equal(error.code, 'admin_requirements_unavailable');
+    return true;
+  });
+
+  const graphqlError = await fixture(t);
+  graphqlError.runner.policyText = policy({ adminOverride: { enabled: true } });
+  graphqlError.runner.rules = [{ type: 'pull_request', ruleset_id: 42, parameters: {} }];
+  graphqlError.runner.branchProtected = true;
+  graphqlError.runner.failClassicProtectionObservation = true;
+  await assert.rejects(authorizeAdminProjectsPr({
+    ...graphqlError.input,
+    reviewedHead: HEAD_OID,
+    confirmReview: true,
+    confirmOwner: true,
+    reason: 'Owner request',
+    bypassedRequirements: ['github-ruleset:pull-request']
+  }, graphqlError.dependencies), (error) => {
+    assert.equal(error.code, 'admin_requirements_unavailable');
+    return true;
+  });
+
+  const transportError = await fixture(t);
+  transportError.runner.policyText = policy({ adminOverride: { enabled: true } });
+  transportError.runner.rules = [{ type: 'pull_request', ruleset_id: 42, parameters: {} }];
+  transportError.runner.branchProtected = true;
+  transportError.runner.classicProtectionExitCode = 1;
+  await assert.rejects(authorizeAdminProjectsPr({
+    ...transportError.input,
+    reviewedHead: HEAD_OID,
+    confirmReview: true,
+    confirmOwner: true,
+    reason: 'Owner request',
+    bypassedRequirements: ['github-ruleset:pull-request']
+  }, transportError.dependencies), (error) => {
+    assert.equal(error.code, 'admin_requirements_unavailable');
+    return true;
+  });
+
+  const classic = await fixture(t);
+  classic.runner.policyText = policy({ adminOverride: { enabled: true } });
+  classic.runner.rules = [{ type: 'pull_request', ruleset_id: 42, parameters: {} }];
+  classic.runner.branchProtected = true;
+  classic.runner.classicBranchProtectionRule = { id: 'BPR_test', pattern: 'main' };
+  await assert.rejects(authorizeAdminProjectsPr({
+    ...classic.input,
+    reviewedHead: HEAD_OID,
+    confirmReview: true,
+    confirmOwner: true,
+    reason: 'Owner request',
+    bypassedRequirements: ['github-ruleset:pull-request']
+  }, classic.dependencies), (error) => {
+    assert.equal(error.code, 'unsupported_admin_requirements');
     return true;
   });
 

@@ -118,6 +118,12 @@ flow:
    observations, and configurations needing no bypass are refused. A later
    normal merge failure never enables this path.
 
+Classic protection is observed separately through the exact GraphQL
+`Ref.branchProtectionRule` with administrator viewer permission and a matching
+base ref. The REST branch `protected` flag is retained only as aggregate
+evidence because GitHub defines it over classic protection or rulesets; it is
+never treated as proof that classic protection is absent.
+
 The admin reason is persisted in local state and appears in receipts. Do not
 put credentials, tokens, personal data, or other secrets in it.
 

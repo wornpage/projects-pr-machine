@@ -55,6 +55,11 @@ inaccessible requirements, and the frozen
 `github.com/wornpage/projects-webmcp-extension` repository. A prior normal
 failure grants no admin authority.
 
+For admin authorization, the controller observes classic protection through
+the exact base `Ref.branchProtectionRule` with administrator viewer permission.
+GitHub's aggregate REST `protected` flag includes both classic rules and
+rulesets, so it is recorded but never used alone to infer classic-rule absence.
+
 Optional stack linking requires an explicit `doctor --stack` pass and the exact official `github/gh-stack` extension. The controller does not install or update that extension. GitHub stack submission is not atomic; a failure may leave a partially linked remote stack, so recovery must repeat the same recorded bottom-to-top order.
 
 ## Arbitrary verification command
