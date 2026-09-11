@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBoundedProcessRunner } from '../integrations/codex/projects-pack-delegation/skills/projects-pack-delegation/scripts/lib/bounded-process.mjs';
 import {
-  CLI_PATH, digest, packageEnvironment, npmArguments, validateManifest, validatePackMetadata,
+  CLI_PATH, digest, createPackageWorkspace, packageEnvironment, npmArguments, validateManifest, validatePackMetadata,
   verifyTarball, regularBytes, verifyInstalledBytes, installedInventory, assertFailureReceipt
 } from './helpers/package-evidence.mjs';
 
@@ -16,7 +16,7 @@ assert.ok(npmCli && path.isAbsolute(npmCli) && (await fs.stat(npmCli)).isFile(),
   'run this contract through npm so npm_execpath is available');
 const manifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
 validateManifest(manifest);
-const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'wornpage-package-contract-'));
+const temp = await createPackageWorkspace(os.tmpdir());
 let uncertain = false;
 try {
   const consumer = path.join(temp, 'consumer');

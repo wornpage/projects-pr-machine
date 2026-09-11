@@ -19,6 +19,11 @@ export const REQUIRED_FILES = Object.freeze([
 export const digest = (bytes, algorithm = 'sha256', encoding = 'hex') =>
   createHash(algorithm).update(bytes).digest(encoding);
 
+// Git reports canonical checkout paths, including Windows long path spellings.
+export async function createPackageWorkspace(parent) {
+  return fs.realpath(await fs.mkdtemp(path.join(parent, 'wornpage-package-contract-')));
+}
+
 export function packageEnvironment(home, inherited = process.env) {
   const env = {};
   for (const [key, value] of Object.entries(inherited)) {

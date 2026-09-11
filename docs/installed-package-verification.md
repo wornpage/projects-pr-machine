@@ -110,6 +110,21 @@ parser, `main`, lifecycle core, verification commands, lock/runner rules, and
 owner approval requirements are unchanged. This correction is not yet an update
 to any already installed or published client.
 
+## Canonical temporary checkout paths
+
+Windows CI passed all 559 Node tests at the launcher-fix revision, then refused
+an installed `status` probe with `unsafe_repository` rather than `state_not_found`.
+The temporary path from `os.tmpdir()` can contain an 8.3 short-name alias, while
+Git returns a canonical long checkout path. The controller correctly requires its
+specified repository to match the Git top level.
+
+The test workspace is now canonicalized with `realpath` before deriving consumer,
+artifact, or repository paths. A real directory-junction regression checks the
+workspace helper on every platform, including two unique creations. The strict
+`state_not_found` assertion, lock ownership assertions, and controller path rules
+are unchanged. This fixes the fixture setup; it does not add production support
+for arbitrary repository aliases.
+
 ## Remaining boundaries
 
 WP-07a's full draft-lifecycle rehearsal and WP-06b's interruption tests remain

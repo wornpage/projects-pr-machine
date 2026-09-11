@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  API_PATH, CLI_PATH, REQUIRED_FILES, digest, packageEnvironment, validateManifest,
+  API_PATH, CLI_PATH, REQUIRED_FILES, digest, createPackageWorkspace, packageEnvironment, validateManifest,
   packagePath, npmArguments, validatePackMetadata, verifyTarball, regularBytes,
   verifyInstalledBytes, installedInventory, assertFailureReceipt
 } from './helpers/package-evidence.mjs';
@@ -202,4 +202,19 @@ test('package evidence: shebang handling cannot silently re-encode arbitrary bod
   assert.throws(() => verifyInstalledBytes(source, changed, CLI_PATH));
   const exact = Buffer.concat([Buffer.from('#!/usr/bin/env node\n'), Buffer.from([255, 254])]);
   assert.equal(verifyInstalledBytes(source, exact, CLI_PATH), true);
+});
+
+
+test('package evidence: temporary workspace resolves directory aliases before controller probes', async t => {
+  const parent = await fixture(t); const actual = path.join(parent, 'actual');
+  const alias = path.join(parent, 'alias');
+  await fs.mkdir(actual); await fs.symlink(actual, alias, 'junction');
+  const directory = await createPackageWorkspace(alias);
+  assert.equal(directory, await fs.realpath(directory));
+  assert.equal(path.dirname(directory), await fs.realpath(actual));
+  assert.match(path.basename(directory), /^wornpage-package-contract-/u);
+  assert.deepEqual(await fs.readdir(directory), []);
+  const second = await createPackageWorkspace(alias);
+  assert.notEqual(directory, second);
+  assert.equal(second, await fs.realpath(second));
 });
