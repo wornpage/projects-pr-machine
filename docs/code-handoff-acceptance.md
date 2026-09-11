@@ -21,9 +21,10 @@ when recording blocked/failed handoffs or another explicitly defined work type.
 Do not downgrade a rejected code assignment to a non-code path to bypass review.
 
 The supported command limit remains **500 Unicode code points**, derived from
-v1. This is the safe compatibility bound for this profile, not a change to the
-standalone controller's 2,000-character input limit. Commands above the v1 bound
-must be rejected **before delegation or preparation**. Do not trim, truncate,
+v1. The initial profile did not narrow the standalone controller's legacy
+2,000-unit input limit. WP-02c now enforces the v1 bound for new public plans
+and preparations, as described below. Commands above this bound must be rejected
+**before delegation or preparation**. Do not trim, truncate,
 normalize, substitute, or split the agreed command after assignment. A later
 coordinated service/client contract migration is required to support longer
 commands end to end. This patch does not implement that migration.
@@ -77,3 +78,63 @@ and negative handoff fixtures with the actual hosted validator, and test the
 service's authorized acceptance transition. Do not enable a new acceptance
 policy based only on a local profile-generator test. Follow CONTRIBUTING.md's
 issue-first process before changing the public authority boundary.
+
+## New controller assignments (WP-02c)
+
+The public `createProjectsPrPlan` and `prepareProjectsPr` functions, including
+CLI `projects-pr prepare`, now require a verification command that fits this
+handoff contract: **1-500 Unicode code points**. The limit is read from the
+existing v1 schema through `CODE_HANDOFF_V1_COMMAND_MAX_LENGTH`. Supplementary
+characters count once, not twice; combining sequences count by code point, not
+by displayed character. A 500-emoji string fits the length rule (this says
+nothing about whether it is an executable or useful command).
+
+New commands must be primitive, well-formed Unicode strings with no surrounding
+whitespace, NUL, CR, LF, or Unicode line/paragraph separator. The library requires
+an own data property; inherited commands, accessors, boxed strings, and implicit
+string conversion are refused. No trimming, Unicode normalization, truncation,
+quoting, or command substitution is performed. Accepted command bytes are hashed
+unchanged. Invalid input returns `ProjectsPrError` / `invalid_input` without
+reflecting the command text. Preparation refuses it before repository reads,
+lock acquisition, subprocess invocation, or state creation. Plan values are
+captured before asynchronous lock discovery so caller mutation cannot replace
+the validated command while preparation is in progress.
+
+This deliberately narrows **new-assignment** input compatibility. Previously the
+controller allowed up to 2,000 UTF-16 units and normalized/coerced input, which
+could create an assignment that the handoff/review helpers could not represent.
+For longer verification logic, commit a reviewed script and assign its short
+literal invocation, for example `node scripts/verify.mjs` or `npm run check`.
+Review the script and any referenced package scripts at the pinned revision;
+hashing the invocation alone does not make those implementations immutable.
+Never split, truncate, or substitute the command in a worker's evidence.
+
+The private lifecycle core and saved-state schema remain unchanged. Existing
+state is not migrated or rewritten: observation and existing recovery rules still
+read its original command/hash. Regression fixtures demonstrate read-only status
+and safe abort of unchanged preparations with 600- and 2,000-unit commands.
+They do not establish every historical state or a legacy finalize/merge path.
+Repeating `prepare` with a legacy incompatible command now refuses. An old long
+assignment still cannot pass the v1 review profile: preserve its work and evidence
+and use owner-directed re-assignment/review with a reportable command. Do not edit
+saved hashes, bypass review, call private core, or delete a production lock to
+force it through. Abort continues to refuse worker changes or published work.
+
+This guard does not execute verification, restrict shell operators, authenticate
+evidence, enforce hosted acceptance, or authorize delivery. Library callers,
+local tools, and ordinary object operations remain trusted; this is not a sandbox.
+Other public exports, runtime deadlines, locking rules, and delivery authority
+are unchanged. The source change does not update an installed client or publish
+a new version.
+
+Focused regression commands:
+
+```sh
+node --test test/verification-command.test.mjs test/code-handoff-acceptance.test.mjs
+node --test test/public-verification-command.test.mjs test/projects-pr-lock.test.mjs
+npm run check
+```
+
+The public integration cases reuse the local Git rehearsal fixture; GitHub
+responses are simulated and no real `gh` process is invoked. Actual platform and
+installed-package CI outcomes must be inspected separately from pure helper tests.
