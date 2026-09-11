@@ -32,6 +32,15 @@ function policy(overrides = {}) {
   });
 }
 
+// Lock discovery is local and bounded separately from the delivery effects.
+function assertInvocationTimeout(invocation) {
+  if (invocation.timeoutMs === undefined) return;
+  const lockDiscovery = invocation.executable === 'git'
+    && invocation.args?.length === 2 && invocation.args[0] === 'rev-parse'
+    && ['--show-toplevel', '--git-common-dir'].includes(invocation.args[1]);
+  assert.equal(invocation.timeoutMs, lockDiscovery ? 10_000 : 30_000);
+}
+
 class DeliveryRunner {
   constructor() {
     this.calls = [];
@@ -72,7 +81,13 @@ class DeliveryRunner {
 
   async invoke(invocation) {
     this.calls.push(structuredClone(invocation));
-    if (invocation.timeoutMs !== undefined) assert.equal(invocation.timeoutMs, 30_000);
+    assertInvocationTimeout(invocation);
+    if (invocation.executable === 'gh' || (invocation.executable === 'git' && invocation.args?.[0] === 'push')) {
+      const owner = JSON.parse(await fs.readFile(
+        path.join(this.repositoryRoot, '.git', 'projects-pr-v2.lock', 'owner.json'), 'utf8'));
+      assert.equal(owner.kind, 'projects-pr-lifecycle-lock');
+      assert.equal(owner.pid, process.pid);
+    }
     if (invocation.executable === 'git') return this.#git(invocation.args);
     if (invocation.executable === 'gh') return this.#gh(invocation.args);
     throw new Error(`unexpected executable: ${invocation.executable}`);
@@ -296,6 +311,24 @@ test('delivery commands parse explicit confirmations and repeated admin bypasses
     '--confirm-review', '--confirm-owner', '--reason', 'owner approved',
     '--bypass', 'github Rial', '--bypass', 'github Other'
   ]).bypassedRequirements, ['github Rial', 'github Other']);
+});
+
+test('delivery fixture distinguishes local lock discovery from bounded delivery effects', () => {
+  for (const flag of ['--show-toplevel', '--git-common-dir']) {
+    const discovery = { executable: 'git', args: ['rev-parse', flag], timeoutMs: 10_000 };
+    assert.doesNotThrow(() => assertInvocationTimeout(discovery));
+    assert.throws(() => assertInvocationTimeout({ ...discovery, timeoutMs: 30_000 }));
+    assert.throws(() => assertInvocationTimeout({ ...discovery, timeoutMs: 0 }));
+  }
+  for (const effect of [
+    { executable: 'gh', args: ['api', 'repos/acme/repo/pulls/7/merge'] },
+    { executable: 'git', args: ['push', 'origin', ':refs/heads/topic'] },
+    { executable: 'git', args: ['ls-remote', '--heads', 'origin', 'refs/heads/topic'] }
+  ]) {
+    assert.doesNotThrow(() => assertInvocationTimeout({ ...effect, timeoutMs: 30_000 }));
+    assert.throws(() => assertInvocationTimeout({ ...effect, timeoutMs: 10_000 }));
+    assert.throws(() => assertInvocationTimeout({ ...effect, timeoutMs: 0 }));
+  }
 });
 
 test('missing trusted policy keeps merge, cleanup, and admin options off', async (t) => {
@@ -590,11 +623,8 @@ test('a merge that succeeds before state receipt failure is recovered without a 
   await authorize(subject);
   let failed = false;
   const flakyFs = {
-    access: fs.access.bind(fs),
-    chmod: fs.chmod.bind(fs),
-    mkdir: fs.mkdir.bind(fs),
-    readFile: fs.readFile.bind(fs),
-    writeFile: fs.writeFile.bind(fs),
+    // Preserve real lock I/O while injecting only the original state-rename fault.
+    ...fs,
     rename: async (...args) => {
       if (subject.runner.pr.merged && !failed) {
         failed = true;
