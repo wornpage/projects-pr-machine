@@ -192,7 +192,7 @@ test('real output overflow cannot produce a successful truncated result', { time
 });
 
 test('real spawn error is bounded and redacted', async () => {
-  const result = await defaultProjectsPrRunner({ executable: path.join(tmpdir(), 'PRIVATE-missing-command-4926'), timeoutMs: 500 });
+  const result = await defaultProjectsPrRunner({ executable: 'projects-pr-PRIVATE-missing-command-4926', timeoutMs: 500 });
   assert.equal(result.terminationReason, 'spawn_failed'); assert.equal(result.processUncertain, false);
   assert.ok(!JSON.stringify(result).includes('PRIVATE'));
 });
@@ -212,7 +212,7 @@ for (const outcome of ['returned', 'threw', 'real-timeout']) {
     await assert.rejects(withRepositoryLifecycleLock(f.root, async () => {
       owner = await fs.readFile(path.join(f.lock, 'owner.json'));
       if (outcome === 'real-timeout') {
-        await session.runner({ executable: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'], timeoutMs: 100 });
+        await session.runner({ executable: 'node', args: ['-e', 'setInterval(()=>{},1000)'], timeoutMs: 100 });
       } else {
         certain = false;
       }
@@ -250,4 +250,64 @@ test('normal completed and ordinary failed operations still release their owned 
 test('real platform verification shell preserves its completed nonzero exit', { timeout: 10_000 }, async () => {
   assert.deepEqual(await defaultProjectsPrRunner({ executable: 'exit 7', shell: true, timeoutMs: 5_000 }),
     { exitCode: 7, stdout: '', stderr: '' });
+});
+
+// Regression coverage for the executable-path autofix, not a sandbox or PATH policy.
+for (const platform of ['linux', 'darwin', 'win32']) {
+  test(`${platform}: raw non-shell executable validation refuses path aliases and metacharacters`, () => {
+    for (const executable of [
+      '/usr/bin/node', 'C:/tools/node.exe', 'C:\\tools\\node.exe', 'C:node',
+      './node', '../node', 'x/../node', 'x/./../node', '.\\node', '..\\node',
+      '//server/share/node', '\\\\server\\share\\node', '/bin/./sh', '/bin//sh',
+      '.', '..', ' node', 'node ', 'node\n', 'node\t', 'node;echo', '$(node)',
+      'node|other', 'node&other', '"node"', "'node'", 'node:stream'
+    ]) {
+      assert.throws(() => processOptions({ executable }, platform), `refuse ${JSON.stringify(executable)}`);
+    }
+    for (const executable of ['git', 'gh', 'pwsh', 'node', 'node.exe', 'tool-name_1.2']) {
+      assert.deepEqual(processOptions({ executable, args: ['literal;argument'] }, platform), {
+        executable, args: ['literal;argument'], cwd: undefined, timeoutMs: PROCESS_TIMEOUT_MS
+      });
+    }
+  });
+}
+
+test('the exact Unix doctor shell is allowed without widening other absolute paths', () => {
+  for (const platform of ['linux', 'darwin']) {
+    const args = ['-c', 'exit 0'];
+    assert.deepEqual(processOptions({ executable: '/bin/sh', args, shell: false }, platform), {
+      executable: '/bin/sh', args, cwd: undefined, timeoutMs: PROCESS_TIMEOUT_MS
+    });
+  }
+  assert.throws(() => processOptions({ executable: '/bin/sh', shell: false }, 'win32'));
+});
+
+test('rejected raw paths never reach spawn and diagnostics omit the input', async () => {
+  for (const executable of ['/PRIVATE/tool', './PRIVATE-tool', 'x/../PRIVATE-tool', 'C:PRIVATE-tool']) {
+    const f = fake();
+    const pending = f.run({ executable });
+    assert.equal(f.calls.length, 0); assert.equal(f.timers.length, 0);
+    assert.deepEqual(await pending, {
+      exitCode: 1, stdout: '', stderr: '', terminationReason: 'invalid_invocation', processUncertain: false
+    });
+  }
+});
+
+test('path-like arguments remain literal data and are not restricted as executables', async () => {
+  const f = fake(); const args = ['-C', '/work tree/PRIVATE;$(data)', 'status'];
+  const p = f.run({ executable: 'git', args });
+  assert.equal(f.calls[0][0], 'git'); assert.deepEqual(f.calls[0][1], args);
+  assert.equal(f.calls[0][2].shell, false);
+  f.child.emit('close', 0, null); assert.equal((await p).exitCode, 0);
+});
+
+test('intentional owner verification text bypasses filename validation but not deadline policy', () => {
+  const command = './verify "/work tree/input" && echo "$VALUE"';
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const spec = processOptions({ executable: command, shell: true }, platform);
+    assert.equal(spec.timeoutMs, VERIFICATION_TIMEOUT_MS);
+    assert.equal(spec.executable, platform === 'win32' ? 'pwsh' : '/bin/sh');
+    assert.equal(spec.args.at(-1), command);
+    assert.throws(() => processOptions({ executable: command, shell: true, timeoutMs: 0 }, platform));
+  }
 });

@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import path from 'node:path';
 
 export const PROCESS_TIMEOUT_MS = 30_000;
 export const VERIFICATION_TIMEOUT_MS = 15 * 60_000;
@@ -16,15 +15,16 @@ export function processOptions(invocation, platform = process.platform) {
   if (typeof executable !== 'string' || !executable.trim() || executable.includes('\0')
       || !Array.isArray(args) || args.some(arg => typeof arg !== 'string' || arg.includes('\0'))
       || typeof shell !== 'boolean' || (cwd !== undefined && (typeof cwd !== 'string' || cwd.includes('\0')))) throw Error();
-  if (!shell) {
-    const normalized = path.posix.normalize(executable).replace(/\\/g, '/');
-    if (path.isAbsolute(executable) || normalized.includes('/') || normalized === '.' || normalized === '..') throw Error();
-  }
+  // Validate the original spelling: normalization could hide './node' or 'x/../node'
+  // while spawn would still receive that path. PATH and installed tools remain trusted.
+  // The fixed Unix doctor probe is the sole non-shell absolute-path exception.
+  const unixShell = !shell && platform !== 'win32' && executable === '/bin/sh';
+  if (!shell && !unixShell && !/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/u.test(executable)) throw Error();
   const timeout = timeoutMs === undefined
     ? (shell ? VERIFICATION_TIMEOUT_MS : PROCESS_TIMEOUT_MS) : timeoutMs;
   if (!Number.isInteger(timeout) || timeout <= 0 || timeout > VERIFICATION_TIMEOUT_MS) throw Error();
   return {
-    executable: shell ? (platform === 'win32' ? 'pwsh' : '/bin/sh') : executable,
+    executable: shell ? (platform === 'win32' ? 'pwsh' : '/bin/sh') : (unixShell ? '/bin/sh' : executable),
     args: shell ? (platform === 'win32'
       ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', executable]
       : ['-c', executable]) : [...args],
