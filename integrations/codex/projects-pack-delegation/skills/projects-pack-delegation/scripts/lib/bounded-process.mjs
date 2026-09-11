@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 
 export const PROCESS_TIMEOUT_MS = 30_000;
 export const VERIFICATION_TIMEOUT_MS = 15 * 60_000;
@@ -15,6 +16,10 @@ export function processOptions(invocation, platform = process.platform) {
   if (typeof executable !== 'string' || !executable.trim() || executable.includes('\0')
       || !Array.isArray(args) || args.some(arg => typeof arg !== 'string' || arg.includes('\0'))
       || typeof shell !== 'boolean' || (cwd !== undefined && (typeof cwd !== 'string' || cwd.includes('\0')))) throw Error();
+  if (!shell) {
+    const normalized = path.posix.normalize(executable).replace(/\\/g, '/');
+    if (path.isAbsolute(executable) || normalized.includes('/') || normalized === '.' || normalized === '..') throw Error();
+  }
   const timeout = timeoutMs === undefined
     ? (shell ? VERIFICATION_TIMEOUT_MS : PROCESS_TIMEOUT_MS) : timeoutMs;
   if (!Number.isInteger(timeout) || timeout <= 0 || timeout > VERIFICATION_TIMEOUT_MS) throw Error();

@@ -25,7 +25,7 @@ function fake() {
   });
   return { child, calls, timers, run };
 }
-const invocation = { executable: process.execPath, args: ['-e', '0'] };
+const invocation = { executable: 'node', args: ['-e', '0'] };
 
 test('default deadlines and both platform shell mappings preserve the literal command', () => {
   assert.equal(PROCESS_TIMEOUT_MS, 30_000); assert.equal(VERIFICATION_TIMEOUT_MS, 900_000);
@@ -165,7 +165,7 @@ test('ordinary results and trusted injected exceptions preserve existing error b
 });
 
 test('real child exits preserve code/output and close unused stdin', { timeout: 10_000 }, async () => {
-  const result = await defaultProjectsPrRunner({ executable: process.execPath, args: ['-e',
+  const result = await defaultProjectsPrRunner({ executable: 'node', args: ['-e',
     "process.stdin.resume(); process.stdin.on('end',()=>{process.stdout.write('out');process.stderr.write('err');process.exitCode=7;});"], timeoutMs: 5_000 });
   assert.deepEqual(result, { exitCode: 7, stdout: 'out', stderr: 'err' });
 });
@@ -176,7 +176,7 @@ test('real direct-child timeout is bounded, does not expose partial output, and 
     child = spawn(...args); closed = new Promise(resolve => child.once('close', resolve)); return child;
   } });
   const started = Date.now();
-  const result = await run({ executable: process.execPath, args: ['-e',
+  const result = await run({ executable: 'node', args: ['-e',
     "process.on('SIGTERM',()=>{}); process.stdout.write('PRIVATE'); setInterval(()=>{},1000);"], timeoutMs: 300 });
   assert.equal(result.terminationReason, 'timeout'); assert.equal(result.processUncertain, true);
   assert.ok(!JSON.stringify(result).includes('PRIVATE')); assert.ok(Date.now() - started < 5_000);
@@ -185,7 +185,7 @@ test('real direct-child timeout is bounded, does not expose partial output, and 
 });
 
 test('real output overflow cannot produce a successful truncated result', { timeout: 10_000 }, async () => {
-  const result = await defaultProjectsPrRunner({ executable: process.execPath,
+  const result = await defaultProjectsPrRunner({ executable: 'node',
     args: ['-e', `process.stdout.write(Buffer.alloc(${PROCESS_OUTPUT_BYTES + 1}));`], timeoutMs: 5_000 });
   assert.equal(result.terminationReason, 'output_limit'); assert.equal(result.stdout, '');
   assert.equal(result.processUncertain, true);
