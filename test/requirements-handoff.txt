@@ -1,0 +1,18 @@
+# Test-only lock for CPython 3.11/3.12 on glibc Linux x86-64.
+# Wheel hashes from https://pypi.org/pypi/<project>/<version>/json.
+# Refresh this complete dependency set and review wheel hashes together.
+# No source builds or unpinned transitive dependencies are allowed in CI.
+attrs==26.1.0 \
+    --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309
+jsonschema==4.26.0 \
+    --hash=sha256:d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce
+jsonschema-specifications==2025.9.1 \
+    --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe
+referencing==0.37.0 \
+    --hash=sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231
+# CPython 3.11 and 3.12 manylinux_2_17_x86_64 wheels, respectively.
+rpds-py==2026.5.1 \
+    --hash=sha256:613fc4ee9eaef26dc5840666214dd6fbcebcf32f46e76f4abc473059f4e13dda \
+    --hash=sha256:b6825cc329b290e93c5f6a9be2393118a763f6ccf6abd83704e0c102ca583644
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
