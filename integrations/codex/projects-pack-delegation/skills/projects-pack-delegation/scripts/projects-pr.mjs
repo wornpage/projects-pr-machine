@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from 'node:path';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   PROJECTS_PR_SCHEMA_VERSION,
@@ -198,6 +199,13 @@ export async function main(argv = process.argv.slice(2), io = console, dependenc
   }
 }
 
-const isEntryPoint = process.argv[1]
-  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+// npm's Unix launcher is a symlink; argv keeps that path while ESM resolves it.
+let isEntryPoint = false;
+if (process.argv[1]) {
+  try {
+    isEntryPoint = realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    // Imports with an absent or unresolvable entry path must remain side-effect free.
+  }
+}
 if (isEntryPoint) process.exitCode = await main();

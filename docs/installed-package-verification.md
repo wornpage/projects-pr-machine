@@ -3,20 +3,21 @@
 `npm run check:package` now tests one real packed and locally installed artifact,
 not only a source-tree import. It does not publish to npm, install globally,
 update existing clients, or contact a hosted GitHub repository. The existing
-package name, version, public API, controller, dependencies, and CI selection
-are unchanged.
+package name, version, public API, dependencies, and CI selection are unchanged.
+A launcher-bootstrap correction discovered by this contract is described below;
+lifecycle logic and authority checks are unchanged.
 
 ## Reproduction
 
 From a checkout with the supported Node, npm, and Git prerequisites:
 
 ```sh
-node --test test/package-evidence.test.mjs
+node --test test/package-evidence.test.mjs test/cli-launcher.test.mjs
 npm run check:package
 npm run check
 ```
 
-The first command exercises the package-verification helpers. The second needs
+The first command exercises the package-verification helpers and CLI bootstrap. The second needs
 npm's `npm_execpath` and runs the actual package contract. The third runs the
 repository tests and then that contract. Existing Linux/Windows Node 22/24 jobs
 run the complete contract; macOS's existing `npm test` runs the helper tests, not
@@ -87,6 +88,28 @@ test directory rather than guessing that descendants are quiescent. Inspect the
 reported temporary directory and relevant test-owned processes before removal.
 Ordinary assertion/command failures clean up the test's own temporary directory.
 
+## Launcher correction discovered by the contract
+
+The first hosted run passed all 553 Node tests, then the Linux installed-launcher
+assertion failed: `projects-pr --help` exited zero with empty output. The old
+bootstrap compared the literal resolved `process.argv[1]` pathname with the ESM
+module pathname. npm's Unix launcher is a symlink, so those pathnames differed
+and the CLI never called `main`. This was a runtime defect, not a reason to remove
+the package assertion or change its expected output.
+
+The bootstrap now compares real paths. It retains import-only behavior when the
+entry path is absent, unresolvable, or belongs to another module. Six regression
+cases exercise direct help, a directory alias, aliased invalid-input receipts,
+a different importing file with the same basename, and evaluation with absent or
+unresolvable entry paths. Directory junctions permit the alias tests on Windows
+without requiring file-symlink privileges. The installed npm launcher is still
+checked separately in `check:package`.
+
+Only the CLI's entry-point detection and filesystem import change. Its command
+parser, `main`, lifecycle core, verification commands, lock/runner rules, and
+owner approval requirements are unchanged. This correction is not yet an update
+to any already installed or published client.
+
 ## Remaining boundaries
 
 WP-07a's full draft-lifecycle rehearsal and WP-06b's interruption tests remain
@@ -103,3 +126,4 @@ disposable target and appropriate credentials.
 - npm offline/configuration and script controls: https://docs.npmjs.com/cli/v10/using-npm/config/
 - npm local tarball installation: https://docs.npmjs.com/cli/v10/commands/npm-install/
 - npm executable-shebang normalization: https://github.com/npm/bin-links/blob/main/lib/fix-bin.js
+- Node ESM resolved module filenames: https://nodejs.org/download/release/v22.14.0/docs/api/esm.html#importmetafilename
