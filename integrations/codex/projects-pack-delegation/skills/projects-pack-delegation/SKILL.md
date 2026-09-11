@@ -53,8 +53,10 @@ handoff, review, sandbox, or owner-decision requirements.
    verification command.
 6. Let assigned children run concurrently. Wait through Codex task
    coordination; never poll Projects.
-7. Have a reviewer validate every Worker Handoff v1. The reviewer recommends
-   only `accept` or `rework`.
+7. Have a reviewer validate every Worker Handoff v1. For Git-backed code,
+   first follow [revision-bound code review](references/code-review.md), with a
+   clean isolated committed checkout and a coordinator-captured snapshot. The
+   reviewer inspects the full pinned diff and recommends only `accept` or `rework`.
 8. The coordinator alone calls `review_worker_handoff`, integrates accepted
    work, verifies the parent, and explicitly decides whether to complete it.
 
@@ -95,15 +97,26 @@ conversation history.
 4. Spawn the assigned `projects_pack_worker` in the absolute
    `plan.worktreePath` returned by `prepare`. Require one or more commits, a
    clean worktree, the fixed verification command, and Worker Handoff v1.
-5. Ask `projects_pack_reviewer` to review the handoff. The coordinator records
-   `accept` or `rework`; never finalize rejected evidence. Rework uses the same
-   pack, delegation key, branch, and worktree.
-6. After acceptance, run:
+5. Follow [revision-bound code review](references/code-review.md). Resolve the
+   read-only helper only as `<skill-root>/scripts/code-review-snapshot.mjs`.
+   Capture the prepared base, independently observed committed head, trusted
+   assignment, and changed-path inventory while the worker is quiescent. Ask
+   `projects_pack_reviewer` to inspect the full pinned diff and handoff. Compare
+   its revision/digest bindings, coverage, findings, and evidence, then recapture
+   with `--expect-context` before recording `accept`. Never accept or finalize
+   mismatched, incomplete, or rejected evidence. Rework retains the same pack,
+   delegation key, branch, and worktree.
+6. After acceptance, recapture with the same `--expect-context` immediately
+   before finalization; stop on any refusal. Then run:
 
    ```text
    node <absolute-controller-path> finalize --pack-id <child-pack-id> --repo <repository-root>
    ```
 
+   Confirm the verified draft head equals the reviewed head before describing
+   it as reviewed or authorizing delivery. A mismatch requires rework or owner
+   handling, not acceptance of the new head. The snapshot is not a lifecycle
+   lock and cannot prevent races between the observation and finalization.
    Report the verified draft URL and owner-decision receipt. Finalization never
    merges or closes the PR.
 
