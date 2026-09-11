@@ -93,3 +93,21 @@ test('local adapter records real push and simulated draft effects before losing 
     assert.equal(events.length, 1); assert.match(events[0].ownerSha256, /^[a-f0-9]{64}$/u);
   }
 });
+
+
+test('local verification distinguishes native exit 7 from the actual platform shell exit', { timeout: 30_000 }, async t => {
+  const f = await createFixture(t);
+  // The base fixture intentionally fails verification. Run the same script with
+  // and without the production shell mapping, without any controller or gh stub.
+  const native = await f.run({ executable: 'node', args: ['verify.mjs'], cwd: f.root, shell: false });
+  const shell = await f.run({ executable: VERIFY, args: [], cwd: f.root, shell: true });
+  assert.equal(native.exitCode, 7);
+  assert.equal(shell.exitCode, process.platform === 'win32' ? 1 : 7);
+  for (const result of [native, shell]) {
+    assert.notEqual(result.processUncertain, true);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /PRIVATE_FIXTURE_VERIFICATION_OUTPUT/u);
+  }
+  assert.deepEqual((await lines(f.verificationFile)).map(item => item.head), [f.base, f.base]);
+  assert.equal((await readJson(f.serviceFile)).pulls.length, 0);
+});

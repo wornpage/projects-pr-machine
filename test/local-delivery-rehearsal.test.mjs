@@ -151,7 +151,10 @@ test('local lifecycle: failed real verification preserves work and redacts its o
   const f = await prepared(t);
   const head = await worker(f, 'not ready\n');
   const failed = await refuses(f, 'finalize', 'verification_failed');
-  assert.equal(failed.error.exitCode, 7);
+  // The receipt records the verification shell's status, not its native child's.
+  // pwsh -Command maps an unforwarded native exit 7 to 1; /bin/sh preserves 7.
+  assert.equal(failed.error.exitCode, process.platform === 'win32' ? 1 : 7);
+  assert.equal((await lines(f.verificationFile)).length, 1);
   assert.equal((await lines(f.verificationFile))[0].head, head);
   await fs.stat(f.plan.worktreePath); await absent(f.lock);
   assert.equal((await events(f, 'push-effect')).length, 0);

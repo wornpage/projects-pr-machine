@@ -92,8 +92,17 @@ Run `node --test test/local-delivery-fixture.test.mjs` for the adapter tests, th
 `node --test test/local-delivery-rehearsal.test.mjs` for the CLI/lifecycle cases,
 and finally `npm run check` for the whole repository and package contract. The
 existing cross-platform CI selects both test files; no workflow change is needed.
-The five adapter tests include seventeen explicit rejected command/path cases.
+The six adapter tests include seventeen explicit rejected command/path cases.
 No platform-specific skips are used.
+
+The failed-verification receipt records the **shell** exit code. For the fixture's
+native Node script exiting 7, `/bin/sh -c` returns 7, while the existing Windows
+`pwsh -Command` invocation returns 1. Microsoft's [PowerShell command documentation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh#-command--c)
+describes this mapping when the command does not explicitly forward the native
+exit status. A separate real-process adapter test compares the exact same script
+with and without the platform shell. Both results must be ordinary failures,
+not uncertainty, and both must show that the verification script actually ran.
+The recorded command and production shell behavior are not modified for the test.
 
 A passing local rehearsal cannot certify GitHub permissions, rulesets, network
 failure behavior, server-side acceptance, hosted reviewer identity, merge queues,
