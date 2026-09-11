@@ -1,0 +1,158 @@
+name: CI gate rehearsal
+
+# Negative scenarios intentionally fail this workflow; never require its check.
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Fixture outcome (negative scenarios intentionally make this run red)'
+        required: true
+        default: success
+        type: choice
+        options: [success, failure, skipped, mixed]
+
+permissions: {}
+env:
+  REHEARSAL_SCENARIO: ${{ inputs.scenario || 'success' }}
+
+jobs:
+  test:
+    name: Rehearsal matrix (${{ matrix.cell }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: [control, probe]
+    steps:
+      - name: Produce a deliberate fixture result
+        shell: bash
+        env:
+          FIXTURE_CELL: ${{ matrix.cell }}
+        run: |
+          case "$REHEARSAL_SCENARIO" in
+            success|failure|skipped|mixed) ;;
+            *) echo 'Invalid rehearsal scenario'; exit 2 ;;
+          esac
+          if [[ "$FIXTURE_CELL" == probe && ( "$REHEARSAL_SCENARIO" == failure || "$REHEARSAL_SCENARIO" == mixed ) ]]; then
+            echo 'Intentional fixture failure; the rehearsal gate must reject it.'
+            exit 1
+          fi
+          echo 'Fixture passed.'
+
+  macos-smoke:
+    name: Rehearsal skip fixture (not a macOS test)
+    if: ${{ (inputs.scenario || 'success') != 'skipped' && (inputs.scenario || 'success') != 'mixed' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Fixture passed.'
+
+  codeql:
+    name: Rehearsal dependency C (not CodeQL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Fixture passed.'
+
+  handoff-semantics:
+    name: Rehearsal dependency D (not semantic validation)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Fixture passed.'
+
+  ci-gate:
+    name: Rehearsal gate
+    if: ${{ always() }}
+    needs: [test, macos-smoke, codeql, handoff-semantics]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions: {}
+    steps:
+      - name: Require every prerequisite to succeed
+        shell: bash
+        env:
+          CI_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          node --input-type=commonjs - <<'NODE'
+          // Keep this checkout-free: inspect only GitHub-provided result data.
+          const required = ['test', 'macos-smoke', 'codeql', 'handoff-semantics'];
+          const knownResults = ['success', 'failure', 'cancelled', 'skipped'];
+          function evaluate(raw) {
+            if (typeof raw !== 'string' || !raw.trim() || Buffer.byteLength(raw, 'utf8') > 16384) {
+              return { passed: false, reason: 'invalid_context' };
+            }
+            let needs;
+            try { needs = JSON.parse(raw); }
+            catch { return { passed: false, reason: 'invalid_json' }; }
+            if (!needs || typeof needs !== 'object' || Array.isArray(needs)) {
+              return { passed: false, reason: 'invalid_context' };
+            }
+            const keys = Object.keys(needs);
+            if (keys.length !== required.length || required.some(id => !Object.hasOwn(needs, id))) {
+              return { passed: false, reason: 'dependency_set_mismatch' };
+            }
+            const jobs = required.map(id => {
+              const job = needs[id];
+              const result = job && typeof job === 'object' && !Array.isArray(job)
+                && Object.hasOwn(job, 'result') ? job.result : null;
+              return { job: id, result: knownResults.includes(result) ? result : 'invalid' };
+            });
+            const passed = jobs.every(job => job.result === 'success');
+            return { passed, reason: passed ? 'all_dependencies_succeeded' : 'dependency_not_successful', jobs };
+          }
+          const receipt = { kind: 'ci-gate', ...evaluate(process.env.CI_NEEDS_JSON) };
+          // Never print the raw context or dependency outputs.
+          console.log(JSON.stringify(receipt));
+          process.exitCode = receipt.passed ? 0 : 1;
+          NODE
+
+  rehearsal-report:
+    name: Rehearsal observation
+    if: ${{ always() }}
+    needs: [test, macos-smoke, codeql, handoff-semantics, ci-gate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Verify expected scheduler and gate outcomes
+        shell: bash
+        env:
+          REHEARSAL_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          node --input-type=commonjs - <<'REPORT'
+          // Observe outcomes, never turn the failed fixture workflow green.
+          const modes = ['success', 'failure', 'skipped', 'mixed'];
+          const ids = ['test', 'macos-smoke', 'codeql', 'handoff-semantics', 'ci-gate'];
+          function observe(mode, raw) {
+            if (!modes.includes(mode)) return { matched: false, reason: 'invalid_scenario' };
+            if (typeof raw !== 'string' || !raw.trim() || Buffer.byteLength(raw, 'utf8') > 16384) {
+              return { matched: false, reason: 'invalid_context' };
+            }
+            let needs;
+            try { needs = JSON.parse(raw); }
+            catch { return { matched: false, reason: 'invalid_json' }; }
+            if (!needs || typeof needs !== 'object' || Array.isArray(needs)
+                || Object.keys(needs).length !== ids.length || ids.some(id => !Object.hasOwn(needs, id))) {
+              return { matched: false, reason: 'dependency_set_mismatch' };
+            }
+            const expected = {
+              test: ['failure', 'mixed'].includes(mode) ? 'failure' : 'success',
+              'macos-smoke': ['skipped', 'mixed'].includes(mode) ? 'skipped' : 'success',
+              codeql: 'success', 'handoff-semantics': 'success',
+              'ci-gate': mode === 'success' ? 'success' : 'failure'
+            };
+            const jobs = ids.map(id => {
+              const record = needs[id];
+              const value = record && typeof record === 'object' && !Array.isArray(record)
+                && Object.hasOwn(record, 'result') ? record.result : null;
+              const actual = ['success', 'failure', 'skipped', 'cancelled'].includes(value) ? value : 'invalid';
+              return { job: id, expected: expected[id], actual };
+            });
+            const matched = jobs.every(job => job.actual === job.expected);
+            return { matched, scenario: mode, reason: matched ? 'expected_outcomes_observed' : 'unexpected_outcomes', jobs };
+          }
+          const receipt = { kind: 'ci-gate-rehearsal', ...observe(process.env.REHEARSAL_SCENARIO, process.env.REHEARSAL_NEEDS_JSON) };
+          console.log(JSON.stringify(receipt));
+          process.exitCode = receipt.matched ? 0 : 1;
+          REPORT
