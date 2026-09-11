@@ -47,3 +47,25 @@ jobs:
         with:
           languages: javascript-typescript
       - uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+
+  handoff-semantics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install locked test-only validator
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r test/requirements-handoff.txt
+      - name: Validate handoff payloads and regression sensitivity
+        run: python test/code-handoff-semantics.py
