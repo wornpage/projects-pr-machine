@@ -35,7 +35,7 @@ function discovery(f) {
 test('public API names remain identical; operations and default runner use the bounded facade', () => {
   assert.deepEqual(Object.keys(surface).sort(), Object.keys(core).sort());
   for (const name of Object.keys(core)) {
-    if ([...Object.values(methods), 'runProjectsPrDoctor', 'statusProjectsPr', 'defaultProjectsPrRunner'].includes(name)) assert.notEqual(surface[name], core[name]);
+    if ([...Object.values(methods), 'runProjectsPrDoctor', 'statusProjectsPr', 'defaultProjectsPrRunner', 'createProjectsPrPlan'].includes(name)) assert.notEqual(surface[name], core[name]);
     else assert.equal(surface[name], core[name], `${name} must retain its identity`);
   }
 });
