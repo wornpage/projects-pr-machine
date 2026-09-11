@@ -69,3 +69,49 @@ jobs:
           python -m pip install --require-hashes --only-binary=:all: -r test/requirements-handoff.txt
       - name: Validate handoff payloads and regression sensitivity
         run: python test/code-handoff-semantics.py
+
+  ci-gate:
+    name: CI gate
+    if: ${{ always() }}
+    needs: [test, macos-smoke, codeql, handoff-semantics]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions: {}
+    steps:
+      - name: Require every prerequisite to succeed
+        shell: bash
+        env:
+          CI_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          node --input-type=commonjs - <<'NODE'
+          // Keep this checkout-free: inspect only GitHub-provided result data.
+          const required = ['test', 'macos-smoke', 'codeql', 'handoff-semantics'];
+          const knownResults = ['success', 'failure', 'cancelled', 'skipped'];
+          function evaluate(raw) {
+            if (typeof raw !== 'string' || !raw.trim() || Buffer.byteLength(raw, 'utf8') > 16384) {
+              return { passed: false, reason: 'invalid_context' };
+            }
+            let needs;
+            try { needs = JSON.parse(raw); }
+            catch { return { passed: false, reason: 'invalid_json' }; }
+            if (!needs || typeof needs !== 'object' || Array.isArray(needs)) {
+              return { passed: false, reason: 'invalid_context' };
+            }
+            const keys = Object.keys(needs);
+            if (keys.length !== required.length || required.some(id => !Object.hasOwn(needs, id))) {
+              return { passed: false, reason: 'dependency_set_mismatch' };
+            }
+            const jobs = required.map(id => {
+              const job = needs[id];
+              const result = job && typeof job === 'object' && !Array.isArray(job)
+                && Object.hasOwn(job, 'result') ? job.result : null;
+              return { job: id, result: knownResults.includes(result) ? result : 'invalid' };
+            });
+            const passed = jobs.every(job => job.result === 'success');
+            return { passed, reason: passed ? 'all_dependencies_succeeded' : 'dependency_not_successful', jobs };
+          }
+          const receipt = { kind: 'ci-gate', ...evaluate(process.env.CI_NEEDS_JSON) };
+          // Never print the raw context or dependency outputs.
+          console.log(JSON.stringify(receipt));
+          process.exitCode = receipt.passed ? 0 : 1;
+          NODE
