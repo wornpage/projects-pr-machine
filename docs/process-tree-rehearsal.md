@@ -26,7 +26,7 @@ policy, or review/delivery authority is changed. The child fixture is under
 | Parent exits 7; descendant still owns output pipes | The same pipe-lifetime rule preserves exit 7 and complete output; an ordinary completed command remains distinct from uncertainty. |
 | Parent exits before the deadline; descendant survives | The real timer expires, no signal targets the already exited parent, partial output is discarded, and the exact lock owner bytes are retained. |
 | Parent remains running at the deadline | The runner attempts direct-child SIGKILL, returns uncertainty, and retains the lock while a descendant still responds. The test separately observes the direct child's exit. |
-| Controller process is killed during its operation | The child and grandchild still respond, while a new invocation refuses the unchanged lock left by the killed controller. |
+| Controller process is killed during its operation | The deliberately detached descendant still responds, while a new invocation refuses the unchanged lock left by the killed controller. Ordinary child survival is not assumed across platforms. |
 
 Fresh challenge/response messages over a private loopback connection demonstrate
 that fixture processes are still executing after the interruption. A PID lookup,
@@ -49,12 +49,25 @@ the protocol accepts only readiness, fresh pings, and fixed stop commands. It do
 not evaluate received code or accept a hostname, executable, or PID to terminate.
 This control channel is test infrastructure, not a production authentication claim.
 
+The relay deliberately starts its descendant with `detached: true` and inherited
+stdout/stderr handles. This models escaping work on Windows as well as Unix,
+without changing how the production runner starts its direct child. Ordinary
+non-detached children can be terminated during Windows parent/job cleanup, so
+the crash case requires fresh execution from the detached descendant, not from
+the intermediate relay. See [Node's detached-process documentation](https://nodejs.org/api/child_process.html#optionsdetached)
+and the [libuv Windows process implementation](https://github.com/libuv/libuv/blob/v1.x/src/win/process.c).
+
 The runner receives its normal spawn options without replacement streams or fake
 timers. The test observes real spawning and direct-child kill calls through its
 existing trusted test seam. Five-second fixture deadlines replace production
 waiting periods only in the test invocation; readiness and process events, rather
 than fixed sleeps, order the assertions. Output ordering between independent
 processes is intentionally not prescribed.
+
+Requested fixture stops use a graceful TCP shutdown before exiting with the
+requested code, rather than causing a platform-dependent connection reset. A
+control-channel close remains distinct from a child-process exit; assertions
+still check actual parent exit codes and fresh post-interruption replies.
 
 Fixtures exit on control-connection closure and independently self-expire after
 25 seconds. Teardown closes all owned connections, cleans up only direct child

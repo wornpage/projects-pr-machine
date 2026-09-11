@@ -19,8 +19,9 @@ if (!['controller', 'relay', 'descendant'].includes(role)
 // Every fixture self-expires even if the test runner dies before cleanup.
 setTimeout(() => process.exit(91), 25_000);
 const socket = net.createConnection({ host: '127.0.0.1', port });
+let stopCode = 0;
 socket.on('error', () => process.exit(92));
-socket.on('close', () => process.exit(0));
+socket.on('close', () => process.exit(stopCode));
 socket.setEncoding('utf8');
 const connected = new Promise(resolve => socket.once('connect', resolve));
 const send = (event, nonce = '') => socket.write(`${JSON.stringify({ token, role, event, nonce })}\n`);
@@ -31,7 +32,12 @@ socket.on('data', chunk => {
   let end;
   while ((end = buffer.indexOf('\n')) !== -1) {
     const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
-    if (line === 'stop:0' || line === 'stop:7') process.exit(Number(line.slice(5)));
+    if (line === 'stop:0' || line === 'stop:7') {
+      // Complete the TCP shutdown before exiting; abrupt exit can reset the peer.
+      stopCode = Number(line.slice(5));
+      socket.end();
+      return;
+    }
     if (/^ping:[a-f0-9-]{36}$/u.test(line)) send('pong', line.slice(5));
     else process.exit(94);
   }
@@ -59,7 +65,9 @@ if (role === 'controller') {
 } else {
   if (role === 'relay') {
     const child = spawn('node', childArgs, {
-      shell: false, windowsHide: true, stdio: ['ignore', 1, 2]
+      // Explicitly model work escaping its parent, including Windows job cleanup.
+      // The inherited output handles still exercise actual pipe lifetime.
+      detached: true, shell: false, windowsHide: true, stdio: ['ignore', 1, 2]
     });
     child.on('error', () => process.exit(96));
   }

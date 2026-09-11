@@ -207,12 +207,13 @@ for (const parentExits of [true, false]) {
     assert.equal(refused.terminationReason, 'session_stopped');
     assert.equal(f.underlyingCalls, calls, 'no further subprocess may execute in this session');
     await within(f.target.exited, 'direct-child termination');
+    await f.ping('descendant'); // Survival must also follow observed parent termination.
     await f.stop('descendant');
     await refusesReentry(f, owner); // Fixture shutdown itself grants no automatic unlock.
   });
 }
 
-test('real controller crash retains owner evidence while its child and grandchild still execute', TEST_OPTIONS, async t => {
+test('real controller crash retains owner evidence while its detached descendant still executes', TEST_OPTIONS, async t => {
   const f = await setup(t);
   const controller = f.startController();
   await f.wait('controller'); await f.wait('relay'); await f.wait('descendant');
@@ -220,7 +221,9 @@ test('real controller crash retains owner evidence while its child and grandchil
   assert.equal(JSON.parse(owner).pid, controller.pid);
   assert.equal(controller.kill('SIGKILL'), true);
   await within(controller.exited, 'killed controller exit');
-  await f.ping('relay'); await f.ping('descendant');
+  // Ordinary relay survival is platform-dependent. The deliberately detached
+  // descendant must demonstrate fresh execution after the controller has exited.
+  await f.ping('descendant');
   await refusesReentry(f, owner);
   await f.stop('descendant'); await f.stop('relay');
   await refusesReentry(f, owner);
