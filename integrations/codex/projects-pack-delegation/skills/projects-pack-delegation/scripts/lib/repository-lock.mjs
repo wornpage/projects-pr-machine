@@ -8,6 +8,7 @@ const OWNER_NAME = 'owner.json';
 const READ_TIMEOUT_MS = 10_000;
 const MAX_PATH_BYTES = 8192;
 const MESSAGES = Object.freeze({
+  lifecycle_process_uncertain: 'Subprocess completion is uncertain. Preserve the lifecycle lock; stop relevant processes and reconcile effects before retrying.',
   lifecycle_lock_unavailable: 'Cannot establish the repository lifecycle lock.',
   lifecycle_locked: 'A lifecycle lock already exists. Inspect the active or interrupted operation; do not automatically remove it.',
   lifecycle_lock_initialization_failed: 'Lock initialization failed. Preserve the lock and investigate before retrying.',
@@ -105,11 +106,20 @@ export async function acquireRepositoryLifecycleLock(repositoryRoot, { runner, f
 }
 
 export async function withRepositoryLifecycleLock(repositoryRoot, operation, dependencies) {
-  if (typeof operation !== 'function') throw fail('lifecycle_lock_unavailable');
+  const canRelease = dependencies?.canRelease ?? (() => true);
+  if (typeof operation !== 'function' || typeof canRelease !== 'function') throw fail('lifecycle_lock_unavailable');
   const release = await acquireRepositoryLifecycleLock(repositoryRoot, dependencies);
   let result; let operationError; let failed = false;
   try { result = await operation(); }
   catch (error) { operationError = error; failed = true; }
+  // A swallowed command failure must not release a lock over possibly live work.
+  let safeToRelease = false;
+  try { safeToRelease = canRelease() === true; } catch { /* Preserve the lock. */ }
+  if (!safeToRelease) {
+    const error = fail('lifecycle_process_uncertain');
+    error.operationOutcome = 'unknown';
+    throw error;
+  }
   try { await release(); }
   catch (error) {
     error.operationOutcome = failed ? 'failed' : 'returned';

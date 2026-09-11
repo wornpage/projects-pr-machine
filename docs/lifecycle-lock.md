@@ -45,6 +45,9 @@ The CLI uses its existing failed-receipt envelope with explicit lock error codes
 - `lifecycle_locked`: an existing path prevented entry; no core operation started.
 - `lifecycle_lock_unavailable`: repository discovery or exclusive creation failed.
 - `lifecycle_lock_initialization_failed`: a partial lock is retained for inspection.
+- `lifecycle_process_uncertain`: interrupted subprocess completion is uncertain;
+  the owned lock is retained with `operationOutcome: unknown`, even if the core
+  caught the command failure. See [subprocess deadlines](subprocess-timeouts.md).
 - `lifecycle_lock_release_failed`: ownership or cleanup was uncertain. The receipt's
   `operationOutcome` distinguishes `returned` from `failed`; effects may already
   have occurred in either case. Inspect state before considering a retry.
@@ -87,8 +90,9 @@ The lock serializes controller invocations, not the whole prepare-to-finalize
 interval. Workers must still be quiescent during review/finalization. It does not
 close review-to-mutation races involving nonparticipants, protect against hostile
 same-user replacement of filesystem entries, or prove reviewer/test authenticity.
-Hung operations retain the lock; existing draft subprocess timeouts remain a
-separate work item. No signal handler removes the lock while children may live.
+The public default runner now bounds subprocess waits and retains this lock on
+uncertain termination. Complete descendant supervision remains a separate work
+item. No signal handler removes the lock while children may live.
 
 Snapshot/report validation, exact revision and publisher checks, frozen-repository
 rules, explicit owner approval, and branch protection retain their distinct roles.
