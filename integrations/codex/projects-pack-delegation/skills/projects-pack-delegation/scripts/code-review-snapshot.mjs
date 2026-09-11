@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
-import { devNull } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { createCodeHandoffAcceptanceSchema } from '../../../contracts/code-handoff-acceptance.mjs';
 
+// Git recognizes /dev/null on Windows too; Node's os.devNull is not a Git config path.
+const devNull = '/dev/null';
 const execute = promisify(execFile);
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const DIGEST = /^[0-9a-f]{64}$/u;

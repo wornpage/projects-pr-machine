@@ -3,13 +3,15 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { devNull, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createCodeReviewSnapshot, defaultReviewGitRunner, parseReviewSnapshotArgs }
   from '../integrations/codex/projects-pack-delegation/skills/projects-pack-delegation/scripts/code-review-snapshot.mjs';
 
+// Use Git's portable null path, not Node's Windows-specific device spelling.
+const devNull = '/dev/null';
 const helper = fileURLToPath(new URL('../integrations/codex/projects-pack-delegation/skills/projects-pack-delegation/scripts/code-review-snapshot.mjs', import.meta.url));
 const hash = value => createHash('sha256').update(value).digest('hex');
 const cleanEnv = () => ({ ...Object.fromEntries(Object.entries(process.env)
@@ -279,4 +281,11 @@ test('gitlinks are refused before recursively inspecting submodule working trees
   git(input.repositoryRoot, 'update-index', '--add', '--cacheinfo', `160000,${input.headOid},submodule`);
   git(input.repositoryRoot, 'commit', '-m', 'gitlink');
   await rejects({ ...input, headOid: git(input.repositoryRoot, 'rev-parse', 'HEAD') }, 'submodules_unsupported');
+});
+
+test('isolated global config works through Git on every supported platform', async () => {
+  const result = await defaultReviewGitRunner({ args: ['config', '--global', '--list'], cwd: tmpdir() });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout.toString('utf8'), '');
+  assert.equal(git(tmpdir(), 'config', '--global', '--list'), '');
 });
