@@ -3,7 +3,9 @@
 import path from 'node:path';
 import * as core from './projects-pr-core.mjs';
 import { LifecycleLockError, withRepositoryLifecycleLock } from './repository-lock.mjs';
+import { createProcessSession, defaultProjectsPrRunner } from './bounded-process.mjs';
 export * from './projects-pr-core.mjs';
+export { defaultProjectsPrRunner };
 
 async function locked(command, implementation, input, dependencies) {
   // Required identifiers must still fail as invalid_input before repository I/O.
@@ -18,11 +20,11 @@ async function locked(command, implementation, input, dependencies) {
     throw new core.ProjectsPrError('A valid repositoryRoot is required.', { code: 'invalid_input' });
   }
   if (command === 'prepare') core.createProjectsPrPlan(input);
+  const session = createProcessSession(dependencies.runner ?? defaultProjectsPrRunner);
   try {
     return await withRepositoryLifecycleLock(repositoryRoot,
-      () => core[implementation](input, dependencies), {
-        runner: dependencies.runner ?? core.defaultProjectsPrRunner,
-        fs: dependencies.fs
+      () => core[implementation](input, { ...dependencies, runner: session.runner }), {
+        runner: session.runner, fs: dependencies.fs, canRelease: session.canRelease
       });
   } catch (error) {
     if (!(error instanceof LifecycleLockError)) throw error;
@@ -62,4 +64,28 @@ export async function authorizeAdminProjectsPr(input = {}, dependencies = {}) {
 }
 export async function finishProjectsPr(input = {}, dependencies = {}) {
   return locked('finish', 'finishProjectsPr', input, dependencies);
+}
+
+async function observed(command, implementation, input, dependencies) {
+  const session = createProcessSession(dependencies.runner ?? defaultProjectsPrRunner);
+  let result; let caught; let failed = false;
+  try { result = await core[implementation](input, { ...dependencies, runner: session.runner }); }
+  catch (error) { caught = error; failed = true; }
+  if (!session.canRelease()) {
+    const message = 'Subprocess observation was interrupted. No automatic retry was performed.';
+    throw new core.ProjectsPrError(message, { code: 'subprocess_uncertain', receipt: {
+      schemaVersion: core.PROJECTS_PR_SCHEMA_VERSION, kind: 'projects-pr', command,
+      status: 'failed', error: { code: 'subprocess_uncertain', message, exitCode: null }
+    } });
+  }
+  if (failed) throw caught;
+  return result;
+}
+
+// Read-only entry points get deadlines without acquiring or removing a lock.
+export async function runProjectsPrDoctor(input = {}, dependencies = {}) {
+  return observed('doctor', 'runProjectsPrDoctor', input, dependencies);
+}
+export async function statusProjectsPr(input = {}, dependencies = {}) {
+  return observed('status', 'statusProjectsPr', input, dependencies);
 }

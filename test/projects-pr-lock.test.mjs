@@ -32,10 +32,10 @@ function discovery(f) {
   } };
 }
 
-test('public API exports remain identical except for the seven locked mutations', () => {
+test('public API names remain identical; operations and default runner use the bounded facade', () => {
   assert.deepEqual(Object.keys(surface).sort(), Object.keys(core).sort());
   for (const name of Object.keys(core)) {
-    if (Object.values(methods).includes(name)) assert.notEqual(surface[name], core[name]);
+    if ([...Object.values(methods), 'runProjectsPrDoctor', 'statusProjectsPr', 'defaultProjectsPrRunner'].includes(name)) assert.notEqual(surface[name], core[name]);
     else assert.equal(surface[name], core[name], `${name} must retain its identity`);
   }
 });
@@ -79,8 +79,8 @@ test('CLI uses the same public mutation lock and returns a nonzero bounded recei
 
 test('doctor and status remain lock-free read-only entry points', async t => {
   const f = await fixture(t); await fs.mkdir(f.lockPath);
-  assert.equal(surface.runProjectsPrDoctor, core.runProjectsPrDoctor);
-  assert.equal(surface.statusProjectsPr, core.statusProjectsPr);
+  assert.notEqual(surface.runProjectsPrDoctor, core.runProjectsPrDoctor);
+  assert.notEqual(surface.statusProjectsPr, core.statusProjectsPr);
   const doctor = await surface.runProjectsPrDoctor({ repositoryRoot: f.repositoryRoot }, {
     nodeVersion: '22.0.0', runner: async () => ({ exitCode: 127, stdout: '', stderr: '' })
   });
@@ -108,3 +108,57 @@ for (const [command, method] of Object.entries(methods)) {
     assert.equal(calls, 0);
   });
 }
+
+for (const [command, method] of Object.entries(methods)) {
+  test(`${command}: uncertain subprocesses retain ownership and prohibit automatic retry`, async t => {
+    const f = await fixture(t); const read = discovery(f); let executions = 0; let owner;
+    const runner = async call => {
+      if (read.calls < 2) return read.runner(call);
+      executions++; owner = await fs.readFile(path.join(f.lockPath, 'owner.json'));
+      // Contradictory successful-looking partial output must never pass through.
+      return { exitCode: 0, stdout: 'PRIVATE_PARTIAL_SUCCESS', processUncertain: true };
+    };
+    await assert.rejects(surface[method](f.input, { runner, nodeVersion: '22.0.0' }), error => {
+      assert.ok(error instanceof surface.ProjectsPrError);
+      assert.equal(error.code, 'lifecycle_process_uncertain');
+      assert.equal(error.receipt.command, command); assert.equal(error.receipt.operationOutcome, 'unknown');
+      assert.equal(error.receipt.recovery.nextCommand, 'status');
+      assert.ok(!JSON.stringify(error.receipt).includes('PRIVATE')); return true;
+    });
+    assert.equal(executions, 1); assert.deepEqual(await fs.readFile(path.join(f.lockPath, 'owner.json')), owner);
+    const retry = discovery(f);
+    await assert.rejects(surface[method](f.input, { runner: retry.runner }), { code: 'lifecycle_locked' });
+    assert.equal(retry.calls, 2); assert.deepEqual(await fs.readFile(path.join(f.lockPath, 'owner.json')), owner);
+  });
+}
+for (const [command, method] of [['doctor', 'runProjectsPrDoctor'], ['status', 'statusProjectsPr']]) {
+  test(`${command}: uncertain observation fails without removing an existing lock`, async t => {
+    const f = await fixture(t); await fs.mkdir(f.lockPath); let calls = 0;
+    await fs.writeFile(path.join(f.lockPath, 'sentinel'), 'original');
+    await assert.rejects(surface[method](f.input, { nodeVersion: '22.0.0', runner: async () => {
+      calls++; return { exitCode: 1, stdout: 'PRIVATE', processUncertain: true };
+    } }), error => {
+      assert.equal(error.code, 'subprocess_uncertain'); assert.equal(error.receipt.command, command);
+      assert.ok(!JSON.stringify(error.receipt).includes('PRIVATE')); return true;
+    });
+    assert.equal(calls, 1); assert.equal(await fs.readFile(path.join(f.lockPath, 'sentinel'), 'utf8'), 'original');
+  });
+}
+
+test('public default runner refuses invalid deadlines without starting a command', async () => {
+  const result = await surface.defaultProjectsPrRunner({ executable: 'PRIVATE_NEVER_EXECUTE', timeoutMs: 0 });
+  assert.equal(result.terminationReason, 'invalid_invocation'); assert.equal(result.exitCode, 1);
+  assert.ok(!JSON.stringify(result).includes('PRIVATE'));
+});
+
+test('CLI emits one retained-lock receipt after subprocess uncertainty, not a completion', async t => {
+  const f = await fixture(t); const read = discovery(f); const out = []; const errors = [];
+  const code = await main(['finalize', '--repo', f.repositoryRoot, '--pack-id', 'pack-1'],
+    { log: value => out.push(value), error: value => errors.push(value) }, {
+      runner: async call => read.calls < 2 ? read.runner(call)
+        : { exitCode: 1, stdout: 'PRIVATE', processUncertain: true }
+    });
+  assert.equal(code, 1); assert.deepEqual(out, []); assert.equal(errors.length, 1);
+  assert.equal(JSON.parse(errors[0]).error.code, 'lifecycle_process_uncertain');
+  assert.ok(!errors[0].includes('PRIVATE')); assert.deepEqual(await fs.readdir(f.lockPath), ['owner.json']);
+});

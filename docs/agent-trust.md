@@ -87,9 +87,11 @@ During beta:
   unreleased source enforces an exclusive invocation lock for cooperating public
   CLI/library mutations. See [lifecycle locking](lifecycle-lock.md) for crash
   recovery and limits; worker edits, old clients, and separate clones are not locked;
-- existing draft-lifecycle Git, shell, and GitHub processes have no
-  controller-enforced timeout; new delivery effects have a 30-second bound and
-  one-shot resume receipts;
+- published beta draft-lifecycle processes have no enforced deadline; current
+  unreleased public CLI/library source uses [bounded subprocesses](subprocess-timeouts.md):
+  30 seconds by default, 15 minutes for verification, retaining existing explicit
+  10/30-second limits. Uncertain termination retains an acquired lifecycle lock;
+  descendant supervision and remote-outcome reconciliation remain separate;
 - injected-effect tests cover command and mutation boundaries, and a disposable
   local bare Git remote covers lease races, but no hosted PR/merge/delete was
   tested.
