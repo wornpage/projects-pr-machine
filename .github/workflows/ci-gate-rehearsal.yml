@@ -2,9 +2,6 @@ name: CI gate rehearsal
 
 # Negative scenarios intentionally fail this workflow; never require its check.
 on:
-  pull_request:
-    branches: [main]
-    paths: ['.github/workflows/ci-gate-rehearsal.yml']
   workflow_dispatch:
     inputs:
       scenario:
@@ -16,7 +13,7 @@ on:
 
 permissions: {}
 env:
-  REHEARSAL_SCENARIO: ${{ inputs.scenario || 'mixed' }}
+  REHEARSAL_SCENARIO: ${{ inputs.scenario || 'success' }}
 
 jobs:
   test:
@@ -45,7 +42,7 @@ jobs:
 
   macos-smoke:
     name: Rehearsal skip fixture (not a macOS test)
-    if: ${{ (inputs.scenario || 'mixed') != 'skipped' && (inputs.scenario || 'mixed') != 'mixed' }}
+    if: ${{ (inputs.scenario || 'success') != 'skipped' && (inputs.scenario || 'success') != 'mixed' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
