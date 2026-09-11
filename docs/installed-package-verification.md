@@ -1,9 +1,10 @@
-# Installed package verification (WP-07b)
+# Installed package verification (WP-07b / WP-07c)
 
 `npm run check:package` now tests one real packed and locally installed artifact,
 not only a source-tree import. It does not publish to npm, install globally,
 update existing clients, or contact a hosted GitHub repository. The existing
-package name, version, public API, dependencies, and CI selection are unchanged.
+package name, version, public API, and dependencies are unchanged. WP-07c extends
+this existing contract to the macOS CI job as described below.
 A launcher-bootstrap correction discovered by this contract is described below;
 lifecycle logic and authority checks are unchanged.
 
@@ -19,9 +20,46 @@ npm run check
 
 The first command exercises the package-verification helpers and CLI bootstrap. The second needs
 npm's `npm_execpath` and runs the actual package contract. The third runs the
-repository tests and then that contract. Existing Linux/Windows Node 22/24 jobs
-run the complete contract; macOS's existing `npm test` runs the helper tests, not
-the full installed-package contract. No platform exclusion was added.
+repository tests and then that contract. Linux/Windows Node 22/24 and macOS Node
+24 jobs now run the complete contract. macOS Node 22 is not covered by this CI
+configuration; no platform exclusion was added.
+
+## Platform CI coverage (WP-07c)
+
+The existing `macos-smoke` job retains its name and Node 24 runner but now runs
+`npm run check`, not just `npm test`. The same installed-artifact, launcher,
+lock-preservation, and ordinary-failure probes therefore run on all five platform
+configurations. This is still a local offline installation on a hosted runner,
+not authenticated end-to-end GitHub delivery or an update to an existing client.
+The aggregate `CI gate` already depends on `macos-smoke`; its dependency list and
+decision program are unchanged. A package failure must fail the platform job and
+consequently the gate. Check names and branch-protection settings are not changed.
+
+Both platform job definitions set checkout's `persist-credentials: false`
+explicitly. This prevents checkout from retaining its authentication configuration
+for subsequent test steps. It does not mean the runner is an operating-system
+sandbox, that GitHub has no job token, or that hosted delivery is authorized.
+Existing read-only workflow defaults and immutable action pins are preserved.
+
+The dependency-free workflow regression suite can be run separately:
+
+```sh
+node --test test/platform-package-ci.test.mjs
+```
+
+It checks the actual platform job blocks and `package.json` script chain, not
+just whether `npm run check` occurs somewhere in the workflow. Negative fixtures
+cover dropped checks, conditional/error-tolerant steps, credential persistence,
+mutable actions, reduced platform coverage, altered triggers/defaults, and fake
+package success. Fixtures are compared as data; no substituted commands execute.
+The existing gate suites continue to test aggregation and failure/skip behavior.
+
+This intentionally recognizes the checked-in layout, not arbitrary YAML. CRLF,
+blank lines, and comments are supported; other layout changes need an explicit
+contract update and review. It is a regression tripwire, not an independent
+security approval, branch-protection rule, or proof that the CI jobs ran. Actual
+platform results and installed-package receipts must still be inspected for the
+exact PR revision before making a verification claim.
 
 ## Artifact continuity
 
