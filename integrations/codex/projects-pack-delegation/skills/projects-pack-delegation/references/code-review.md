@@ -107,6 +107,12 @@ merge, deploy, or complete a parent.
 
 ## Revalidate before accepting and finalizing
 
+For code work, the coordinator must run `scripts/code-review-report.mjs` from the
+trusted installed skill before recording accept and immediately before finalize.
+Use the bounded JSON envelope and native report profile below. Any nonzero exit
+stops that action; a snapshot-only check does not substitute for report validation.
+The report guard also recaptures Git state using the original expected digest.
+
 The coordinator compares reviewer IDs/digest/coverage to its own snapshot and
 rechecks the trusted assignment's purpose and constraints; those prose fields
 are not included in the snapshot digest. Reject a missing/malformed native report,
@@ -151,3 +157,81 @@ Local verification: `node --test test/code-review-snapshot.test.mjs test/code-re
 Run the complete repository `npm run check` before delivery. Exercise an actual
 independent host review and the private acceptance transition before claiming
 end-to-end enforcement.
+
+## Executable native report guard (WP-03b)
+
+Invoke `node <trusted-skill-root>/scripts/code-review-report.mjs` with no arguments.
+Send one UTF-8 JSON object to stdin and close stdin. The coordinator constructs
+exactly these two properties; neither the worker nor the reviewer chooses the
+trusted assignment or replaces its expected digest:
+
+```json
+{
+  "assignment": {
+    "repositoryRoot": "<absolute-review-checkout>",
+    "baseOid": "<full-original-base-sha>",
+    "headOid": "<full-reviewed-head-sha>",
+    "packId": "<trusted-pack-id>",
+    "workerId": "<trusted-worker-id>",
+    "verificationCommand": "<literal-assigned-command>",
+    "expectedContextSha256": "<coordinator-saved-original-context-digest>"
+  },
+  "report": "<the native report object above, not a string>"
+}
+```
+
+Replace placeholders with actual data. Pass the reviewer's original JSON object
+without adding missing evidence or silently correcting its recommendation. Do not
+coerce types, remove unknown fields, or normalize ambiguous duplicate keys before
+validation. Assemble the envelope without changing the native report's JSON text;
+otherwise duplicate-key evidence can be lost before the guard reads it. A failed
+report returns to that same reviewer/assignment for rework or owner handling.
+
+The report has exactly the nine fields shown above. For an `accept` recommendation:
+
+- Revision and context fields are full lowercase hashes matching the trusted
+  assignment. `filesReviewed` is a unique, exact, case-sensitive set of all changed
+  paths, including deletions and both rename sides; order is irrelevant.
+- Each finding has exactly `path`, `location`, `severity`, `blocking`, `impact`,
+  and `correction`. `location` is a nonblank line/symbol description or null when
+  unavailable; identify base locations for deleted code. Severity is `info`, `low`,
+  `medium`, `high`, or `critical`; `blocking` must be a JSON boolean. Any blocker,
+  high, or critical finding prevents validation, even with `blocking: false`.
+  Findings may reference unchanged surrounding paths. Do not invent findings.
+- Each evidence item has exactly `origin` and `description`. Origin is
+  `worker-reported` or `independently-observed`. At least one actual independently
+  observed item is required: for example, inspection of the pinned diff. A label
+  is only a claim, not authentication or permission to relabel worker assertions.
+- `limitations` must be empty. `reviewNote`, evidence descriptions, and finding
+  impact/correction are nonblank, well-formed Unicode strings of at most 4,000
+  UTF-16 code units. Locations allow 500 units. Limits are 256 reviewed paths,
+  128 findings, and 64 evidence/limitation items. Paths follow the snapshot's
+  500-code-point bound and cannot contain empty, dot, or parent segments.
+
+Input is limited to 256 KiB and eight JSON container levels. Duplicate keys,
+including escaped-equivalent keys, malformed JSON, and invalid UTF-8 are refused.
+The CLI allows ten seconds to receive stdin through EOF. Git reads retain the
+snapshot helper's independent per-read deadlines and output bounds. The helper
+never executes the verification command, writes files, or accepts work.
+
+Exit zero emits `status: "validated"`, the base/head/context hashes, a digest of
+`JSON.stringify` applied to the parsed report, and bounded counts. It omits paths,
+assignment IDs, commands, and prose. This receipt is not a Worker Handoff v1 report,
+reviewer signature, controller receipt, or authorization token. Keep the original
+review and coordinator-held inputs in the authorized review context, outside the
+worker-writable checkout; do not publish them as telemetry or thread bindings.
+
+A nonzero exit emits a fixed refusal code. `snapshot_refused` means recapture did
+not succeed; use the existing snapshot diagnostic path without discarding the
+original expected digest. No bypass or accept-on-error option exists. Successful
+validation still requires handoff/schema validation, verification execution,
+actual independent inspection, unchanged assignment purpose/scope, and the
+existing coordinator/owner decisions. This check adds no lock or hosted mutation.
+
+The module also exports `checkCodeReviewReport(rawJson)` for trusted callers. Its
+optional capture function and the input-reader deadline override are test seams,
+not CLI/envelope options or untrusted extension points. Both helpers and this
+shared coordinator/reviewer protocol must come from the same trusted installation.
+A source merge does not update installed clients or activate a GitHub review bot.
+
+Focused verification: `node --test test/code-review-report.test.mjs`.
