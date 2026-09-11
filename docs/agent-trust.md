@@ -83,7 +83,10 @@ Success removes only the exact clean prepared worktree. Failures preserve diagno
 
 During beta:
 
-- run only one controller process per repository because cross-process lifecycle locking is not implemented;
+- published beta clients require one controller process per repository; current
+  unreleased source enforces an exclusive invocation lock for cooperating public
+  CLI/library mutations. See [lifecycle locking](lifecycle-lock.md) for crash
+  recovery and limits; worker edits, old clients, and separate clones are not locked;
 - existing draft-lifecycle Git, shell, and GitHub processes have no
   controller-enforced timeout; new delivery effects have a 30-second bound and
   one-shot resume receipts;
