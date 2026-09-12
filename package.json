@@ -27,7 +27,8 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "check": "npm test && npm run check:package",
-    "check:package": "node test/package-contract.mjs"
+    "check:package": "node test/package-contract.mjs",
+    "rehearse:hosted": "node scripts/hosted-draft-rehearsal.mjs"
   },
   "repository": {
     "type": "git",
