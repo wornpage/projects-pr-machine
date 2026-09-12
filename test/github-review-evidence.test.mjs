@@ -36,7 +36,7 @@ test('independent review: exact allowlisted approval plus resolved threads, brac
   const f = fixture(); const receipt = await run(f);
   assert.equal(receipt.status, 'validated'); assert.deepEqual(receipt.reviewerIds, [22]);
   assert.deepEqual(receipt.reviewIds, [1]); assert.match(receipt.evidenceSha256, /^[0-9a-f]{64}$/u);
-  assert.equal(f.reads, 2); assert.equal(f.calls.length, 3);
+  assert.equal(f.reads, 3); assert.equal(f.calls.length, 5);
 });
 for (const [label, mutate, code] of [
   ['worker self-review', f => { f.reviews[0].user.id = 11; }, 'independent_review_required'],
@@ -75,16 +75,16 @@ test('independent review: complete multi-page reviews and threads', async () => 
   const f = fixture(); const rest = f.client.rest; let pages = 0;
   f.client.rest = async resource => {
     if (!resource.includes('/reviews?')) return rest(resource);
-    pages++; return pages === 1 ? Array.from({ length: 100 }, (_, i) => ({ ...f.reviews[0], id: i + 2, state: 'COMMENTED' })) : f.reviews;
+    pages++; return resource.endsWith('&page=1') ? Array.from({ length: 100 }, (_, i) => ({ ...f.reviews[0], id: i + 2, state: 'COMMENTED' })) : f.reviews;
   };
   let threadPages = 0;
   f.client.graphql = async (_, variables) => {
-    threadPages++; assert.equal(variables.after, threadPages === 1 ? null : 'next');
+    threadPages++; assert.equal(variables.after, threadPages % 2 === 1 ? null : 'next');
     return { data: { repository: { pullRequest: { headRefOid: f.expected.headOid, baseRefOid: f.expected.baseOid,
-      reviewThreads: { nodes: [{ id: `thread-${threadPages}`, isResolved: true }],
-        pageInfo: { hasNextPage: threadPages === 1, endCursor: 'next' } } } } } };
+      reviewThreads: { nodes: [{ id: `thread-${threadPages % 2}`, isResolved: true }],
+        pageInfo: { hasNextPage: threadPages % 2 === 1, endCursor: 'next' } } } } } };
   };
-  assert.equal((await run(f)).status, 'validated'); assert.equal(pages, 2); assert.equal(threadPages, 2);
+  assert.equal((await run(f)).status, 'validated'); assert.equal(pages, 4); assert.equal(threadPages, 4);
 });
 test('independent review: pagination loops, missing collections, and GraphQL errors fail closed', async () => {
   for (const client of [
