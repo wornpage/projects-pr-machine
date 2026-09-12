@@ -21,7 +21,12 @@ export const sha256 = value => createHash('sha256').update(value).digest('hex');
 // Copy inert JSON data before any await. No getters, toJSON, coercion, or shared
 // references. This is a bounded data contract, not a hostile-JavaScript sandbox.
 export function captureData(value) {
-  let nodes = 0;
+  let nodes = 0; let textBytes = 0;
+  function budgetText(text) {
+    requireThat(text.length <= 262144 && text.isWellFormed(), 'invalid_data');
+    textBytes += Buffer.byteLength(text, 'utf8');
+    requireThat(textBytes <= 262144, 'invalid_data');
+  }
   function copy(item, depth) {
     requireThat(++nodes <= 10000 && depth <= 32, 'invalid_data');
     if (item === null || typeof item === 'boolean') return item;
@@ -30,7 +35,7 @@ export function captureData(value) {
       return item;
     }
     if (typeof item === 'string') {
-      requireThat(item.length <= 262144 && item.isWellFormed(), 'invalid_data');
+      budgetText(item);
       return item;
     }
     requireThat(item && typeof item === 'object', 'invalid_data');
@@ -48,6 +53,9 @@ export function captureData(value) {
       }
       return Object.freeze(result);
     }
+    // Bound aggregate key/value text before sorting keys or allocating full JSON.
+    // Final encoded-byte accounting below also covers escaping and punctuation.
+    keys.forEach(budgetText);
     return Object.freeze(Object.fromEntries(keys.sort().map(key => {
       const property = Object.getOwnPropertyDescriptor(item, key);
       requireThat(Object.hasOwn(property, 'value'), 'invalid_data');
