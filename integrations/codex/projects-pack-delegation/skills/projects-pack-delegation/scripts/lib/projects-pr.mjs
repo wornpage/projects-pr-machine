@@ -5,6 +5,7 @@ import * as core from './projects-pr-core.mjs';
 import { LifecycleLockError, withRepositoryLifecycleLock } from './repository-lock.mjs';
 import { createProcessSession, defaultProjectsPrRunner } from './bounded-process.mjs';
 import { newPlanVerificationCommand, VerificationCommandError } from './verification-command.mjs';
+import { captureMutationInput, MutationInputError } from './mutation-input.mjs';
 export * from './projects-pr-core.mjs';
 export { defaultProjectsPrRunner };
 
@@ -21,6 +22,12 @@ export function createProjectsPrPlan(input = {}) {
 }
 
 async function locked(command, implementation, input, dependencies) {
+  // Bind the operation and its recovery receipt before lock discovery can yield.
+  try { input = captureMutationInput(command, input); }
+  catch (error) {
+    if (!(error instanceof MutationInputError)) throw error;
+    throw new core.ProjectsPrError(error.message, { code: 'invalid_input' });
+  }
   // Required identifiers must still fail as invalid_input before repository I/O.
   // Core retains the complete command-specific validation and authority checks.
   const packIds = command === 'stack' ? input.packIds : [input.packId];
@@ -28,16 +35,20 @@ async function locked(command, implementation, input, dependencies) {
       || packIds.some(id => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/u.test(String(id ?? '').trim()))) {
     throw new core.ProjectsPrError('Valid delegated pack identifiers are required.', { code: 'invalid_input' });
   }
-  const repositoryRoot = String(input.repositoryRoot ?? process.cwd()).trim();
-  if (!repositoryRoot || repositoryRoot.length > 1000) {
+  const rootText = String(input.repositoryRoot ?? process.cwd()).trim();
+  if (!rootText || rootText.length > 1000) {
     throw new core.ProjectsPrError('A valid repositoryRoot is required.', { code: 'invalid_input' });
   }
+  const repositoryRoot = path.resolve(rootText);
+  input = Object.freeze({ ...input, repositoryRoot });
   if (command === 'prepare') {
     const plan = createProjectsPrPlan(input);
     // Capture validated plan values before the first await; caller mutation must
     // not replace the command (or its assignment) while lock discovery is pending.
-    input = { ...input, ...plan };
+    input = Object.freeze({ ...input, ...plan });
   }
+  // Capture dependency references, not their trusted implementation internals.
+  dependencies = Object.freeze({ ...dependencies });
   const session = createProcessSession(dependencies.runner ?? defaultProjectsPrRunner);
   try {
     return await withRepositoryLifecycleLock(repositoryRoot,
